@@ -486,9 +486,11 @@ PioneerDDJ1000.init = function() {
     PioneerDDJ1000.connectGlobal();
     PioneerDDJ1000.applyColorFx();
     PioneerDDJ1000.timer = engine.beginTimer(PioneerDDJ1000.config.displayIntervalMs, PioneerDDJ1000.tick);
+    PioneerDDJ1000.jogStart();
 };
 
 PioneerDDJ1000.shutdown = function() {
+    PioneerDDJ1000.jogStop();
     if (PioneerDDJ1000.timer) {
         engine.stopTimer(PioneerDDJ1000.timer);
         PioneerDDJ1000.timer = 0;
@@ -515,6 +517,140 @@ PioneerDDJ1000.shutdown = function() {
         midi.sendShortMsg(PioneerDDJ1000.deckStatus(deck), PioneerDDJ1000.display.info, 0x7F);
         midi.sendShortMsg(PioneerDDJ1000.deckStatus(deck), PioneerDDJ1000.display.ring, 0x00);
     });
+};
+
+// ---------------------------------------------------------------------------
+// Jog-display unlock (MIDI SysEx handshake)
+// ---------------------------------------------------------------------------
+// The jog screens live on the unit's HID interface, but that interface only
+// accepts artwork/beatgrid/waveform data once the unit has been moved into
+// "performance mode" by a SysEx cert handshake on the MIDI interface. This
+// mapping runs that handshake (and the arm poll + keepalive); the separate HID
+// mapping (Pioneer-DDJ-1000.hid.xml) then drives the screens. The crypto is in
+// Pioneer-DDJ-1000-jog-lib.js (DDJ1000Jog) -- FNV-1a, no per-unit secret.
+//
+// State: idle -> arming (send 50 01 until the unit answers 0x11 ready) ->
+// challenging (sent 0x12, wait for 0x13) -> unlocked (got 0x15); once unlocked
+// the arm poll keeps beaconing as a keepalive, as performance mode does not
+// latch. See DDJ1000_JOG_WAVEFORM_SOLVED.md.
+
+PioneerDDJ1000.jog = {
+    enabled: true,      // set false to leave the unit in plain MIDI mode
+    state: "idle",
+    hc: null,
+    armTimer: 0,
+    unlocked: false,
+    armPeriodMs: 200,   // ~5 polls/s, matching rekordbox
+    retryMs: 800,       // give up waiting for 0x13/0x15 and re-challenge
+    stateSince: 0,
+    lastReplyMs: 0,
+};
+
+PioneerDDJ1000.jogSetState = function(state) {
+    PioneerDDJ1000.jog.state = state;
+    PioneerDDJ1000.jog.stateSince = Date.now();
+};
+
+PioneerDDJ1000.jogSend = function(sysexArray) {
+    midi.sendSysexMsg(sysexArray, sysexArray.length);
+};
+
+PioneerDDJ1000.jogRandomChallenge = function() {
+    const hc = [];
+    let allZero = true, allFf = true;
+    for (let i = 0; i < 8; i++) {
+        const b = Math.floor(Math.random() * 256) & 0xFF;
+        hc.push(b);
+        allZero = allZero && b === 0;
+        allFf = allFf && b === 0xFF;
+    }
+    if (allZero || allFf) {
+        hc[0] ^= 0x5A; // never all-00 / all-FF
+    }
+    return hc;
+};
+
+PioneerDDJ1000.jogStart = function() {
+    if (!PioneerDDJ1000.jog.enabled || typeof DDJ1000Jog === "undefined") {
+        return;
+    }
+    PioneerDDJ1000.jog.unlocked = false;
+    PioneerDDJ1000.jogSetState("arming");
+    // The arm poll doubles as arming (before unlock) and keepalive (after), so
+    // one periodic timer serves both for the whole session. The state machine
+    // is self-healing: a lost 0x13/0x15 times out and re-challenges, so it can
+    // never get wedged.
+    PioneerDDJ1000.jog.armTimer = engine.beginTimer(PioneerDDJ1000.jog.armPeriodMs, () => {
+        const jog = PioneerDDJ1000.jog;
+        PioneerDDJ1000.jogSend(DDJ1000Jog.buildArm());
+        const waited = Date.now() - jog.stateSince;
+        if (jog.state === "ready") {
+            // Unit is armed; issue a fresh challenge and wait for 0x13.
+            jog.hc = PioneerDDJ1000.jogRandomChallenge();
+            PioneerDDJ1000.jogSend(DDJ1000Jog.buildMsg12(jog.hc));
+            PioneerDDJ1000.jogSetState("challenging");
+        } else if ((jog.state === "challenging" || jog.state === "responded") &&
+                   waited > jog.retryMs) {
+            // No 0x13 / 0x15 came back in time; retry from the challenge.
+            PioneerDDJ1000.jogSetState("ready");
+        }
+    });
+};
+
+PioneerDDJ1000.jogStop = function() {
+    if (PioneerDDJ1000.jog.armTimer) {
+        engine.stopTimer(PioneerDDJ1000.jog.armTimer);
+        PioneerDDJ1000.jog.armTimer = 0;
+    }
+    PioneerDDJ1000.jog.state = "idle";
+    PioneerDDJ1000.jog.unlocked = false;
+};
+
+// Called by Mixxx for every incoming MIDI message, SysEx included. We only act
+// on the unit's cert replies (0x11 ready, 0x13 challenge reply, 0x15 accept);
+// everything else is left to the normal <control> mappings.
+PioneerDDJ1000.incomingData = function(data) {
+    if (typeof DDJ1000Jog === "undefined") {
+        return;
+    }
+    const bytes = (data instanceof ArrayBuffer) ? new Uint8Array(data) : data;
+    if (!bytes || bytes.length < 12 || bytes[0] !== 0xF0) {
+        return;
+    }
+    const type = DDJ1000Jog.msgType(bytes);
+    if (type === null) {
+        return;
+    }
+    PioneerDDJ1000.jog.lastReplyMs = Date.now();
+    if (type === 0x11) {
+        // Ready beacon. Seen while arming (expected) or again after an unlock
+        // if the unit reverted to idle -- in both cases, (re)challenge.
+        if (PioneerDDJ1000.jog.state === "arming" || PioneerDDJ1000.jog.unlocked) {
+            PioneerDDJ1000.jog.unlocked = false;
+            PioneerDDJ1000.jogSetState("ready");
+        }
+    } else if (type === 0x13) {
+        const reply = DDJ1000Jog.parse13(bytes);
+        if (!reply || reply.r === null) {
+            return;
+        }
+        // Self-check: the unit's answer must match our firmware-derived
+        // prediction. We send 0x14 regardless (the unit decides), but log a
+        // mismatch so a firmware change is noticed.
+        const match = (DDJ1000Jog.predictUnitAnswer(PioneerDDJ1000.jog.hc, reply.r) >>> 0) ===
+            (reply.unitAnswer >>> 0);
+        if (!match) {
+            engine.log("DDJ-1000 jog: 0x13 answer mismatch (firmware change?)");
+        }
+        PioneerDDJ1000.jogSend(DDJ1000Jog.buildMsg14(reply.r));
+        PioneerDDJ1000.jogSetState("responded");
+    } else if (type === 0x15) {
+        if (!PioneerDDJ1000.jog.unlocked) {
+            PioneerDDJ1000.jog.unlocked = true;
+            PioneerDDJ1000.jogSetState("unlocked");
+            engine.log("DDJ-1000 jog: performance mode unlocked (0x15 accept)");
+        }
+    }
 };
 
 PioneerDDJ1000.open = function() {

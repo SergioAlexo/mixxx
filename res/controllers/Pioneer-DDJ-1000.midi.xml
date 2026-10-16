@@ -45,6 +45,7 @@
     </settings>
     <controller id="DDJ-1000">
         <scriptfiles>
+            <file functionprefix="" filename="Pioneer-DDJ-1000-jog-lib.js"/>
             <file functionprefix="PioneerDDJ1000" filename="Pioneer-DDJ-1000-scripts.js"/>
         </scriptfiles>
         <controls>
