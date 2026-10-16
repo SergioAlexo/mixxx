@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MixxxControllerPreset mixxxVersion="2.5.0" schemaVersion="1">
+  <info>
+    <name>Pioneer DDJ-1000 (Jog Displays)</name>
+    <author>DDJ-1000 jog-display reverse engineering</author>
+    <description>HID jog-screen driver for the Pioneer DDJ-1000: streams beat grid, status and overview waveform to the two jog displays. Load this ALONGSIDE the MIDI mapping (Pioneer DDJ-1000), which handles all controls and runs the SysEx handshake that unlocks the unit's HID performance mode. The waveform columns are a placeholder pattern until Mixxx exposes real overview data to controller scripts.</description>
+    <devices>
+      <product protocol="hid" vendor_id="0x2b73" product_id="0x0020" usage_page="0xffa0" usage="0x0001" interface_number="0x03"/>
+    </devices>
+  </info>
+  <controller id="DDJ-1000-Jog">
+    <scriptfiles>
+      <file functionprefix="" filename="Pioneer-DDJ-1000-jog-lib.js"/>
+      <file functionprefix="PioneerDDJ1000HID" filename="Pioneer-DDJ-1000-hid-scripts.js"/>
+    </scriptfiles>
+  </controller>
+</MixxxControllerPreset>
