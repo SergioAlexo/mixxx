@@ -66,6 +66,13 @@ class ControllerScriptInterfaceLegacy : public QObject {
     Q_INVOKABLE void reset(const QString& group, const QString& name);
     Q_INVOKABLE double getDefaultValue(const QString& group, const QString& name);
     Q_INVOKABLE double getDefaultParameter(const QString& group, const QString& name);
+    /// Returns the analysed overview waveform of the track loaded on `group`,
+    /// resampled to `columns` columns. Each column is a 4-element array
+    /// [all, low, mid, high] of band amplitudes (0..255). Returns an empty
+    /// array when no track is loaded or the overview is not yet analysed.
+    /// Intended for controllers with their own waveform displays (e.g. the
+    /// Pioneer DDJ-1000 jog screens), which Mixxx cannot otherwise feed.
+    Q_INVOKABLE QJSValue getWaveformSummary(const QString& group, int columns = 600);
     Q_INVOKABLE QJSValue makeConnection(const QString& group,
             const QString& name,
             const QJSValue& callback);
