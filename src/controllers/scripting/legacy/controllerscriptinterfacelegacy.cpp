@@ -1,6 +1,7 @@
 #include "controllerscriptinterfacelegacy.h"
 
 #include <QStringEncoder>
+#include <algorithm>
 #include <gsl/pointers>
 
 #include "control/controlobject.h"
@@ -8,12 +9,15 @@
 #include "control/controlpotmeter.h"
 #include "controllers/scripting/legacy/controllerscriptenginelegacy.h"
 #include "controllers/scripting/legacy/scriptconnectionjsproxy.h"
+#include "mixer/playerinfo.h"
 #include "mixer/playermanager.h"
 #include "moc_controllerscriptinterfacelegacy.cpp"
+#include "track/track.h"
 #include "util/cmdlineargs.h"
 #include "util/fpclassify.h"
 #include "util/make_const_iterator.h"
 #include "util/time.h"
+#include "waveform/waveform.h"
 
 #define SCRATCH_DEBUG_OUTPUT false
 
@@ -678,6 +682,56 @@ bool ControllerScriptInterfaceLegacy::isTrackLoaded(const QString& group) {
     }
 
     return pTrackLoaded->toBool();
+}
+
+QJSValue ControllerScriptInterfaceLegacy::getWaveformSummary(
+        const QString& group, int columns) {
+    const auto pJSEngine = m_pScriptEngineLegacy->jsEngine();
+    VERIFY_OR_DEBUG_ASSERT(pJSEngine) {
+        return QJSValue::UndefinedValue;
+    }
+    if (columns <= 0) {
+        columns = 600;
+    }
+    QJSValue result = pJSEngine->newArray();
+
+    TrackPointer pTrack = PlayerInfo::instance().getTrackInfo(group);
+    if (!pTrack) {
+        return result; // nothing loaded -> empty array
+    }
+    ConstWaveformPointer pWaveform = pTrack->getWaveformSummary();
+    if (!pWaveform || pWaveform->getDataSize() <= 0) {
+        return result; // overview not analysed yet -> empty array
+    }
+
+    const int dataSize = pWaveform->getDataSize();
+    result.setProperty(QStringLiteral("length"), columns);
+    // Resample the overview to `columns` columns, taking the peak of each band
+    // over the source range that maps to each column.
+    for (int c = 0; c < columns; ++c) {
+        int start = static_cast<int>(static_cast<qint64>(c) * dataSize / columns);
+        int end = static_cast<int>(static_cast<qint64>(c + 1) * dataSize / columns);
+        if (end <= start) {
+            end = start + 1;
+        }
+        if (end > dataSize) {
+            end = dataSize;
+        }
+        unsigned char all = 0, low = 0, mid = 0, high = 0;
+        for (int i = start; i < end; ++i) {
+            all = std::max(all, pWaveform->getAll(i));
+            low = std::max(low, pWaveform->getLow(i));
+            mid = std::max(mid, pWaveform->getMid(i));
+            high = std::max(high, pWaveform->getHigh(i));
+        }
+        QJSValue column = pJSEngine->newArray(4);
+        column.setProperty(0, all);
+        column.setProperty(1, low);
+        column.setProperty(2, mid);
+        column.setProperty(3, high);
+        result.setProperty(static_cast<quint32>(c), column);
+    }
+    return result;
 }
 
 void ControllerScriptInterfaceLegacy::scratchEnable(int deck,
