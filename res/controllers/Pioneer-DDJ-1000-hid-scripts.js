@@ -73,10 +73,21 @@ PioneerDDJ1000HID.tick = function() {
         }
         return;
     }
-    // Idle: stream status for each loaded deck (keepalive + live position).
+    // Idle: stream status for each deck (keepalive + live position). An empty
+    // deck still gets a frame -- the "no track" status (trackLoaded:false) --
+    // so the jog shows rekordbox's not-loaded view instead of sitting on its
+    // default loading spinner forever.
     PioneerDDJ1000HID.decks.forEach((deck) => {
         const st = PioneerDDJ1000HID.state[deck];
-        if (!st || !st.loaded) {
+        if (!st) {
+            return;
+        }
+        if (!st.loaded) {
+            PioneerDDJ1000HID.sendReport(DDJ1000Jog.statusPacket({
+                deck: deck,
+                playing: false,
+                trackLoaded: false,
+            }));
             return;
         }
         // playposition is 0..1 over the track; scale to elapsed ms for the
@@ -177,6 +188,7 @@ PioneerDDJ1000HID.onLoad = function(deck, loaded) {
     st.gotRealWave = false;
     st.gridSent = false;
     st.placeholderSent = false;
+    st.artSent = false;
     // Defer: at the instant track_loaded fires, duration/bpm may not be set yet.
     st.loadTimer = engine.beginTimer(PioneerDDJ1000HID.config.renderDelayMs, () => {
         st.loadTimer = 0;
@@ -206,6 +218,18 @@ PioneerDDJ1000HID.renderContext = function(deck) {
         PioneerDDJ1000HID.sendBurst(DDJ1000Jog.beatgridPackets(
             deck, DDJ1000Jog.makeBeats(st.bpm, st.durationMs, 0)));
         st.gridSent = true;
+    }
+
+    // Cover art once (rekordbox sends it after the grid, before the waveform).
+    // Like the waveform it needs an engine hook; getCoverArt returns an empty
+    // array until the track's cover is available, so a failed attempt just
+    // retries on the next pass.
+    if (!st.artSent && typeof engine.getCoverArt === "function") {
+        const art = engine.getCoverArt(group, 80, DDJ1000Jog.ART_MAX);
+        if (art && art.length > 0) {
+            PioneerDDJ1000HID.sendBurst(DDJ1000Jog.artPackets(deck, art));
+            st.artSent = true;
+        }
     }
 
     // Real analysed overview if the engine hook has it yet.

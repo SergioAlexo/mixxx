@@ -85,6 +85,15 @@ var DDJ1000Jog = (function() {
         return HDR.concat([0x50, 0x01, 0xf7]);
     }
 
+    // "Report all control positions": the unit answers within ~1 ms with a CC
+    // dump of every fader/knob (tempo, trim, EQ, volume) on all four decks and
+    // the mixer, as 14-bit MSB/LSB pairs. rekordbox sends this on connect to
+    // sync the software to the hardware; the unit does not report positions on
+    // its own. Captured from rekordbox: F0 00 40 05 00 00 02 00 00 03 01 F7.
+    function buildRequestState() {
+        return HDR.concat([0x03, 0x01, 0xf7]);
+    }
+
     // Post-handshake display-config SysEx (types 0x0a/0x0b/0x0c), captured from
     // rekordbox's init burst. These move the jog from the idle logo into the
     // performance-mode deck view; without them the unit shows a loading spinner
@@ -468,12 +477,14 @@ var DDJ1000Jog = (function() {
     return {
         // handshake
         K: K, fnv1a: fnv1a, kConst: kConst,
-        buildArm: buildArm, buildMsg12: buildMsg12, buildMsg14: buildMsg14,
+        buildArm: buildArm, buildRequestState: buildRequestState,
+        buildMsg12: buildMsg12, buildMsg14: buildMsg14,
         deckViewSysex: deckViewSysex,
         parse13: parse13, predictUnitAnswer: predictUnitAnswer, hostAnswer: hostAnswer,
         isReady: isReady, isAccept: isAccept, msgType: msgType,
         // HID packets
         REPORT_LEN: REPORT_LEN, WAVE_POINTS: WAVE_POINTS, WAVE_MAX_H: WAVE_MAX_H,
+        ART_MAX: ART_MAX,
         rgb565: rgb565, wavePoint: wavePoint, wavePackets: wavePackets,
         artPackets: artPackets, beatgridPackets: beatgridPackets, makeBeats: makeBeats,
         statusPacket: statusPacket, retarget: retarget, patternPoints: patternPoints,
