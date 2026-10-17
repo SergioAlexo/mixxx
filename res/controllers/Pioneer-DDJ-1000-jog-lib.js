@@ -330,9 +330,14 @@ var DDJ1000Jog = (function() {
         0x00, 0x00, 0x15, 0x00, 0x00, 0x01, 0x00, 0x02, 0x0d, 0x00,
         0x00, 0x00, 0x00, 0x00];
 
-    // opts: { deck, playing (bool), trackLoaded (bool), durationMs }.
+    // opts: { deck, playing (bool), trackLoaded (bool), durationMs, elapsedMs }.
     // Returns one 64-byte status report. Fields that are not yet decoded keep
     // the captured template value.
+    //
+    // Playback position (the jog's moving cursor) is bytes 11-13, a 24-bit
+    // big-endian count of 1/256-second units: field = elapsed_seconds * 256.
+    // Decoded empirically from rekordbox captures (byte 12 ticks once per track-
+    // second; the field advances at 256/s scaled by deck tempo).
     function statusPacket(opts) {
         var r = STATUS_TEMPLATE.slice(0);
         r[0] = (opts.deck << 4) & 0xf0;
@@ -341,6 +346,16 @@ var DDJ1000Jog = (function() {
         }
         // byte5 bit7 = playing.
         r[5] = (opts.playing ? 0x80 : 0x00) | (r[5] & 0x7f);
+        if (typeof opts.elapsedMs === "number" && opts.elapsedMs >= 0) {
+            var f = Math.round(opts.elapsedMs * 256 / 1000);
+            if (f < 0) {
+                f = 0;
+            }
+            r[10] = (f >> 24) & 0xff; // effectively 0 for any real track
+            r[11] = (f >> 16) & 0xff;
+            r[12] = (f >> 8) & 0xff;
+            r[13] = f & 0xff;
+        }
         if (typeof opts.durationMs === "number" && opts.durationMs > 0) {
             var d = opts.durationMs | 0;
             r[15] = 0x02;
@@ -396,14 +411,23 @@ var DDJ1000Jog = (function() {
         if (!n) {
             return null;
         }
+        // Normalize to the track's peak so the loudest part fills the full
+        // column height, as rekordbox does -- Mixxx's raw overview samples
+        // rarely approach 255, so a fixed /255 scale looks too short.
+        var peak = 1;
+        for (var j = 0; j < n; j++) {
+            var a = summary[j] ? (summary[j][0] & 0xff) : 0;
+            if (a > peak) {
+                peak = a;
+            }
+        }
+        var scale = WAVE_MAX_H / peak;
         var pts = [];
         for (var i = 0; i < WAVE_POINTS; i++) {
             var col = summary[Math.floor(i * n / WAVE_POINTS)] || [0, 0, 0, 0];
             var all = col[0] & 0xff, low = col[1] & 0xff, mid = col[2] & 0xff, high = col[3] & 0xff;
-            var hOuter = all * WAVE_MAX_H / 255.0;
-            var hInner = low * WAVE_MAX_H / 255.0;
             var colOuter = rgb565(low, mid, high);
-            pts.push(wavePoint(hOuter, hInner, colOuter, rgb565(255, 255, 255)));
+            pts.push(wavePoint(all * scale, low * scale, colOuter, rgb565(255, 255, 255)));
         }
         return pts;
     }
