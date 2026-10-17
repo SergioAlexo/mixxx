@@ -610,6 +610,30 @@ PioneerDDJ1000.jogStop = function() {
     PioneerDDJ1000.jog.unlocked = false;
 };
 
+// Replay rekordbox's captured post-handshake init burst (Pioneer-DDJ-1000-
+// initburst.js): short MIDI (LED/pad + display-mode) and a few SysEx, in order.
+// This is what moves the jog from the idle logo into the performance-mode deck
+// view. Sent once on unlock.
+PioneerDDJ1000.jogReplayInitBurst = function() {
+    if (typeof PioneerDDJ1000InitBurst === "undefined") {
+        return;
+    }
+    PioneerDDJ1000InitBurst.forEach((hex) => {
+        const bytes = [];
+        for (let i = 0; i + 1 < hex.length; i += 2) {
+            bytes.push(parseInt(hex.substr(i, 2), 16));
+        }
+        if (bytes.length === 0) {
+            return;
+        }
+        if (bytes[0] === 0xF0) {
+            midi.sendSysexMsg(bytes, bytes.length);
+        } else if (bytes.length >= 3) {
+            midi.sendShortMsg(bytes[0], bytes[1], bytes[2]);
+        }
+    });
+};
+
 // Called by Mixxx for every incoming MIDI message, SysEx included. We only act
 // on the unit's cert replies (0x11 ready, 0x13 challenge reply, 0x15 accept);
 // everything else is left to the normal <control> mappings.
@@ -653,6 +677,10 @@ PioneerDDJ1000.incomingData = function(data) {
             PioneerDDJ1000.jog.unlocked = true;
             PioneerDDJ1000.jogSetState("unlocked");
             engine.log("DDJ-1000 jog: performance mode unlocked (0x15 accept)");
+            // Move the jog into the performance-mode deck view (else it shows a
+            // loading spinner) by replaying rekordbox's full post-handshake init
+            // burst.
+            PioneerDDJ1000.jogReplayInitBurst();
         }
     }
 };
@@ -901,6 +929,13 @@ PioneerDDJ1000.updateDisplayInfo = function(deck) {
 
 // From the timer: the time and the position bar.
 PioneerDDJ1000.updateClock = function(deck) {
+    // In HID performance mode the jog screen is driven over HID (the separate
+    // jog-display mapping). Sending the MIDI-mode clock/position here as well
+    // fights that display and pulls the unit back toward the standard view, so
+    // suppress the MIDI jog-display stream while unlocked.
+    if (PioneerDDJ1000.jog.unlocked) {
+        return;
+    }
     const group = PioneerDDJ1000.group(deck);
     const note = PioneerDDJ1000.deckStatus(deck);
     const d = PioneerDDJ1000.display;
