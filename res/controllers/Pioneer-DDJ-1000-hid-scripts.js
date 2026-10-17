@@ -73,17 +73,28 @@ PioneerDDJ1000HID.tick = function() {
         }
         return;
     }
-    // Idle: stream status for each loaded deck (keepalive + live state).
+    // Idle: stream status for each loaded deck (keepalive + live position).
     PioneerDDJ1000HID.decks.forEach((deck) => {
         const st = PioneerDDJ1000HID.state[deck];
         if (!st || !st.loaded) {
             return;
         }
+        // playposition is 0..1 over the track; scale to elapsed ms for the
+        // jog's moving cursor (bytes 11-13 = elapsed * 256). Read duration live
+        // (it may not have been set when the track first loaded).
+        const group = PioneerDDJ1000HID.group(deck);
+        let pos = engine.getValue(group, "playposition");
+        if (!(pos >= 0)) {
+            pos = 0;
+        }
+        const durationMs = Math.round(engine.getValue(group, "duration") * 1000) || st.durationMs;
+        const elapsedMs = pos * durationMs;
         PioneerDDJ1000HID.sendReport(DDJ1000Jog.statusPacket({
             deck: deck,
             playing: st.playing,
             trackLoaded: true,
-            durationMs: st.durationMs,
+            durationMs: durationMs,
+            elapsedMs: elapsedMs,
         }));
     });
 };
@@ -164,6 +175,8 @@ PioneerDDJ1000HID.onLoad = function(deck, loaded) {
     }
     st.waveTries = 0;
     st.gotRealWave = false;
+    st.gridSent = false;
+    st.placeholderSent = false;
     // Defer: at the instant track_loaded fires, duration/bpm may not be set yet.
     st.loadTimer = engine.beginTimer(PioneerDDJ1000HID.config.renderDelayMs, () => {
         st.loadTimer = 0;
@@ -171,6 +184,12 @@ PioneerDDJ1000HID.onLoad = function(deck, loaded) {
     }, true);
 };
 
+// Send the static render context ONCE per load: beat grid, then the waveform.
+// The overview waveform must be sent as few times as possible -- re-sending it
+// forces a full redraw on the unit (visible blink) and floods the single HID IO
+// thread, which makes the whole jog display lag. So the waveform goes out at
+// most twice: a placeholder immediately, then the real analysed data once it is
+// ready. Retries only re-check for data; they never re-send the placeholder.
 PioneerDDJ1000HID.renderContext = function(deck) {
     const group = PioneerDDJ1000HID.group(deck);
     const st = PioneerDDJ1000HID.state[deck];
@@ -182,41 +201,41 @@ PioneerDDJ1000HID.renderContext = function(deck) {
     st.durationMs = Math.round((durationS || 0) * 1000);
     st.bpm = bpm || 0;
 
-    // Beat grid (real): a constant-BPM grid across the track. A future refinement
-    // can walk Mixxx's actual (possibly non-constant) beats via beat_next.
-    if (st.bpm > 0 && st.durationMs > 0) {
-        const beats = DDJ1000Jog.makeBeats(st.bpm, st.durationMs, 0);
-        PioneerDDJ1000HID.sendBurst(DDJ1000Jog.beatgridPackets(deck, beats));
+    // Beat grid once (constant-BPM across the track).
+    if (!st.gridSent && st.bpm > 0 && st.durationMs > 0) {
+        PioneerDDJ1000HID.sendBurst(DDJ1000Jog.beatgridPackets(
+            deck, DDJ1000Jog.makeBeats(st.bpm, st.durationMs, 0)));
+        st.gridSent = true;
     }
 
-    // Overview waveform. Prefer real analysed data from the engine hook
-    // (engine.getWaveformSummary, added for controllers with their own
-    // displays); fall back to a placeholder pattern if the build lacks the
-    // hook or the overview is not analysed yet.
-    let points = null;
+    // Real analysed overview if the engine hook has it yet.
+    let realPoints = null;
     if (typeof engine.getWaveformSummary === "function") {
         const summary = engine.getWaveformSummary(group, DDJ1000Jog.WAVE_POINTS);
         if (summary && summary.length > 0) {
-            points = DDJ1000Jog.wavePointsFromSummary(summary);
-            st.gotRealWave = true;
+            realPoints = DDJ1000Jog.wavePointsFromSummary(summary);
         }
     }
-    if (!points) {
-        points = DDJ1000Jog.patternPoints(PioneerDDJ1000HID.config.wavePattern);
-        // Analysis is asynchronous: the overview may not be ready right after
-        // load. Retry a few times so the real waveform replaces the placeholder
-        // once it is analysed.
-        if (st.waveTries < PioneerDDJ1000HID.config.waveRetries && !st.loadTimer) {
-            st.waveTries++;
-            st.loadTimer = engine.beginTimer(PioneerDDJ1000HID.config.waveRetryMs, () => {
-                st.loadTimer = 0;
-                if (st.loaded && !st.gotRealWave) {
-                    PioneerDDJ1000HID.renderContext(deck);
-                }
-            }, true);
-        }
+    if (realPoints) {
+        PioneerDDJ1000HID.sendBurst(DDJ1000Jog.wavePackets(deck, realPoints, false, true));
+        st.gotRealWave = true;
+        return; // done -- no more waveform sends for this track
     }
-    PioneerDDJ1000HID.sendBurst(DDJ1000Jog.wavePackets(deck, points, false, true));
+    // No real data yet: show the placeholder once, then only re-check (no resend).
+    if (!st.placeholderSent) {
+        PioneerDDJ1000HID.sendBurst(DDJ1000Jog.wavePackets(
+            deck, DDJ1000Jog.patternPoints(PioneerDDJ1000HID.config.wavePattern), false, true));
+        st.placeholderSent = true;
+    }
+    if (st.waveTries < PioneerDDJ1000HID.config.waveRetries && !st.loadTimer) {
+        st.waveTries++;
+        st.loadTimer = engine.beginTimer(PioneerDDJ1000HID.config.waveRetryMs, () => {
+            st.loadTimer = 0;
+            if (st.loaded && !st.gotRealWave) {
+                PioneerDDJ1000HID.renderContext(deck);
+            }
+        }, true);
+    }
 };
 
 // ---------------------------------------------------------------------------
