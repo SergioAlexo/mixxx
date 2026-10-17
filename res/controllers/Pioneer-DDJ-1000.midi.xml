@@ -50,6 +50,15 @@
         </scriptfiles>
         <controls>
             <control>
+                <description>Jog-display unlock: parse incoming cert SysEx (0x11 ready / 0x13 reply / 0x15 accept)</description>
+                <group>[Master]</group>
+                <key>PioneerDDJ1000.incomingData</key>
+                <status>0xF0</status>
+                <options>
+                    <Script-Binding/>
+                </options>
+            </control>
+            <control>
                 <description>Deck 1 PLAY/PAUSE</description>
                 <group>[Channel1]</group>
                 <key>PioneerDDJ1000.play</key>
