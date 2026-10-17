@@ -66,6 +66,10 @@ PioneerDDJ1000.config = {
     // Mixxx's 15-per-second position updates, so the bar turns smoothly.
     displayIntervalMs: 20,
     blinkMs: 250,
+    // Launch fader sync: ask for the position dump once the MIDI output is up,
+    // then arm rate soft-takeover after the dumped tempo has landed.
+    stateRequestMs: 300,
+    rateTakeoverMs: 900,
 };
 
 // ---------------------------------------------------------------------------
@@ -477,7 +481,6 @@ PioneerDDJ1000.init = function() {
         if (tempoRange !== "preferences") {
             PioneerDDJ1000.override(group, "rateRange", Number(tempoRange) / 100);
         }
-        engine.softTakeover(group, "rate", true);
         PioneerDDJ1000.connectDeck(deck);
     });
 
@@ -490,15 +493,47 @@ PioneerDDJ1000.init = function() {
     PioneerDDJ1000.connectGlobal();
     PioneerDDJ1000.applyColorFx();
     PioneerDDJ1000.timer = engine.beginTimer(PioneerDDJ1000.config.displayIntervalMs, PioneerDDJ1000.tick);
+    // Only run the jog-display handshake (which flips the unit into performance
+    // mode) when the user has opted in alongside the HID mapping; otherwise stay
+    // plain MIDI. jogStart() is a no-op while jog.enabled is false.
+    PioneerDDJ1000.jog.enabled = PioneerDDJ1000.setting("jogDisplays", false);
     PioneerDDJ1000.jogStart();
+
+    // Sync the mixer and tempo faders to the hardware on launch. The unit does
+    // not report its fader/knob positions on its own, but answers a 03 01
+    // request with a full CC dump of every tempo, trim, EQ and volume fader
+    // (this is what rekordbox sends on connect). Both timers are deferred
+    // because Mixxx opens the MIDI output only after init() returns: the
+    // request goes out once the port is up, and rate soft-takeover is armed
+    // only after the dumped tempo has been applied -- armed any earlier it
+    // would swallow the sync value and leave the tempo unsynced.
+    PioneerDDJ1000.syncRequestTimer = engine.beginTimer(
+        PioneerDDJ1000.config.stateRequestMs, PioneerDDJ1000.requestControlPositions, true);
+    PioneerDDJ1000.rateTakeoverTimer = engine.beginTimer(
+        PioneerDDJ1000.config.rateTakeoverMs, PioneerDDJ1000.armRateSoftTakeover, true);
+};
+
+// Ask the unit to dump every fader/knob position (see buildRequestState).
+PioneerDDJ1000.requestControlPositions = function() {
+    PioneerDDJ1000.syncRequestTimer = 0;
+    PioneerDDJ1000.jogSend(DDJ1000Jog.buildRequestState());
+};
+
+// Arm soft-takeover on each deck's tempo, after the launch dump has synced it.
+PioneerDDJ1000.armRateSoftTakeover = function() {
+    PioneerDDJ1000.rateTakeoverTimer = 0;
+    PioneerDDJ1000.decks.forEach((deck) => {
+        engine.softTakeover(PioneerDDJ1000.group(deck), "rate", true);
+    });
 };
 
 PioneerDDJ1000.shutdown = function() {
     PioneerDDJ1000.jogStop();
-    if (PioneerDDJ1000.timer) {
-        engine.stopTimer(PioneerDDJ1000.timer);
-        PioneerDDJ1000.timer = 0;
-    }
+    [PioneerDDJ1000.timer, PioneerDDJ1000.syncRequestTimer, PioneerDDJ1000.rateTakeoverTimer]
+        .filter((id) => id).forEach((id) => engine.stopTimer(id));
+    PioneerDDJ1000.timer = 0;
+    PioneerDDJ1000.syncRequestTimer = 0;
+    PioneerDDJ1000.rateTakeoverTimer = 0;
     PioneerDDJ1000.decks.forEach((deck) => {
         const state = PioneerDDJ1000.deck[deck];
         [state.loadTimer, state.reverseTimer].filter((id) => id).forEach((id) => engine.stopTimer(id));
@@ -539,7 +574,11 @@ PioneerDDJ1000.shutdown = function() {
 // latch. See DDJ1000_JOG_WAVEFORM_SOLVED.md.
 
 PioneerDDJ1000.jog = {
-    enabled: true,      // set false to leave the unit in plain MIDI mode
+    // Off by default: with only this MIDI mapping enabled the unit stays in
+    // plain MIDI mode exactly as before. init() turns it on from the
+    // "jogDisplays" setting, which the user ticks together with the separate
+    // HID mapping that actually draws the screens.
+    enabled: false,
     state: "idle",
     hc: null,
     armTimer: 0,

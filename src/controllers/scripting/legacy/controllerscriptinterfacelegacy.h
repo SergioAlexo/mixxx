@@ -73,6 +73,14 @@ class ControllerScriptInterfaceLegacy : public QObject {
     /// Intended for controllers with their own waveform displays (e.g. the
     /// Pioneer DDJ-1000 jog screens), which Mixxx cannot otherwise feed.
     Q_INVOKABLE QJSValue getWaveformSummary(const QString& group, int columns = 600);
+    /// Returns the cover art of the track loaded on `group` as a baseline JPEG,
+    /// cropped square and scaled to `size`x`size`, re-encoded at decreasing
+    /// quality until it fits `maxBytes`. The result is a JS array of byte
+    /// values (0..255); an empty array means no track, no cover art, or the
+    /// image could not be fit into `maxBytes`. Intended for controllers with
+    /// their own artwork displays (e.g. the Pioneer DDJ-1000 jog screens).
+    Q_INVOKABLE QJSValue getCoverArt(
+            const QString& group, int size = 80, int maxBytes = 10240);
     Q_INVOKABLE QJSValue makeConnection(const QString& group,
             const QString& name,
             const QJSValue& callback);

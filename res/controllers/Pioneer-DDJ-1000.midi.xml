@@ -42,6 +42,19 @@
             <option variable="colorFxPreset4" type="integer" min="0" max="99" default="0"
                 label="FILTER button: Quick Effect preset number (0 = keep)"/>
         </group>
+        <group label="Jog displays">
+            <option variable="jogDisplays" type="boolean" default="false"
+                label="Drive the jog screens (also enable the &quot;Pioneer DDJ-1000 (Jog Displays)&quot; HID mapping)">
+                <description>
+                    Off: plain MIDI only -- the unit stays in its standard mode exactly as before.
+                    On: this mapping runs the SysEx handshake that flips the unit into performance
+                    mode so the jog screens can be driven. Only turn this on together with the
+                    separate "Pioneer DDJ-1000 (Jog Displays)" HID controller mapping, which actually
+                    draws the waveform, beat grid and artwork; on its own, performance mode leaves the
+                    jog screens blank.
+                </description>
+            </option>
+        </group>
     </settings>
     <controller id="DDJ-1000">
         <scriptfiles>

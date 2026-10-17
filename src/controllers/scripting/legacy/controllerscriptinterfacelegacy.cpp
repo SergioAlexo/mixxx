@@ -1,5 +1,8 @@
 #include "controllerscriptinterfacelegacy.h"
 
+#include <QBuffer>
+#include <QByteArray>
+#include <QImage>
 #include <QStringEncoder>
 #include <algorithm>
 #include <gsl/pointers>
@@ -9,6 +12,7 @@
 #include "control/controlpotmeter.h"
 #include "controllers/scripting/legacy/controllerscriptenginelegacy.h"
 #include "controllers/scripting/legacy/scriptconnectionjsproxy.h"
+#include "library/coverart.h"
 #include "mixer/playerinfo.h"
 #include "mixer/playermanager.h"
 #include "moc_controllerscriptinterfacelegacy.cpp"
@@ -730,6 +734,75 @@ QJSValue ControllerScriptInterfaceLegacy::getWaveformSummary(
         column.setProperty(2, mid);
         column.setProperty(3, high);
         result.setProperty(static_cast<quint32>(c), column);
+    }
+    return result;
+}
+
+QJSValue ControllerScriptInterfaceLegacy::getCoverArt(
+        const QString& group, int size, int maxBytes) {
+    const auto pJSEngine = m_pScriptEngineLegacy->jsEngine();
+    VERIFY_OR_DEBUG_ASSERT(pJSEngine) {
+        return QJSValue::UndefinedValue;
+    }
+    if (size <= 0) {
+        size = 80;
+    }
+    if (maxBytes <= 0) {
+        maxBytes = 10240;
+    }
+    QJSValue result = pJSEngine->newArray();
+
+    TrackPointer pTrack = PlayerInfo::instance().getTrackInfo(group);
+    if (!pTrack) {
+        return result; // nothing loaded -> empty array
+    }
+    const CoverInfo::LoadedImage loaded =
+            pTrack->getCoverInfoWithLocation().loadImage(pTrack);
+    if (loaded.result != CoverInfo::LoadedImage::Result::Ok || loaded.image.isNull()) {
+        return result; // no cover (or not loadable) -> empty array
+    }
+
+    // The jog display wants a square baseline JPEG. Scale to a `size`x`size`
+    // cover, cropping to square first so the art is not distorted.
+    QImage image = loaded.image;
+    const int side = std::min(image.width(), image.height());
+    if (side > 0 && image.width() != image.height()) {
+        image = image.copy((image.width() - side) / 2,
+                (image.height() - side) / 2,
+                side,
+                side);
+    }
+    image = image.scaled(size,
+            size,
+            Qt::IgnoreAspectRatio,
+            Qt::SmoothTransformation);
+
+    // Encode to baseline JPEG, stepping the quality down until it fits the
+    // controller's size budget. QImage's JPEG writer is baseline (non-
+    // progressive), which is what the firmware decoder expects.
+    QByteArray jpeg;
+    for (int quality = 85; quality >= 20; quality -= 15) {
+        jpeg.clear();
+        QBuffer buffer(&jpeg);
+        buffer.open(QIODevice::WriteOnly);
+        if (!image.save(&buffer, "JPEG", quality)) {
+            buffer.close();
+            return result; // encoder failed -> empty array
+        }
+        buffer.close();
+        if (jpeg.size() <= maxBytes) {
+            break;
+        }
+    }
+    if (jpeg.isEmpty() || jpeg.size() > maxBytes) {
+        return result; // could not fit the budget -> empty array
+    }
+
+    const int length = jpeg.size();
+    result.setProperty(QStringLiteral("length"), length);
+    for (int i = 0; i < length; ++i) {
+        result.setProperty(static_cast<quint32>(i),
+                static_cast<quint32>(static_cast<unsigned char>(jpeg.at(i))));
     }
     return result;
 }
