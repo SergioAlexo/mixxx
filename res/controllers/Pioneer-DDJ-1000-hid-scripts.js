@@ -27,7 +27,8 @@
 var PioneerDDJ1000HID = {};
 
 PioneerDDJ1000HID.config = {
-    statusIntervalMs: 20,   // ~50 frames/s per loaded deck (keepalive + liveness)
+    tickMs: 20,             // paced sender tick (~50 Hz)
+    burstChunk: 8,          // packets flushed per tick from the burst queue
     wavePattern: "sine",    // placeholder: "sine" | "square" | "ramp" | "flat"
     renderDelayMs: 120,     // wait after a load before pushing context (let analysis settle)
     waveRetries: 20,        // re-check for the analysed waveform this many times...
@@ -42,18 +43,49 @@ PioneerDDJ1000HID.group = function(deck) {
     return "[Channel" + deck + "]";
 };
 
-// Send one 64-byte report (reportID 0). nonSkipping=true forces strict FIFO
-// delivery with no de-duplication -- mandatory for the multi-packet beatgrid/
-// waveform bursts (every packet shares reportID 0) and for the status stream
-// (identical frames must still reach the unit to hold performance mode).
-PioneerDDJ1000HID.sendReport = function(report, nonSkipping) {
-    controller.send(report, report.length, 0, nonSkipping === true);
+// Everything goes through Mixxx's non-skipping HID output FIFO (all our reports
+// share reportID 0, so the skipping/coalescing path can't carry a multi-packet
+// transfer). That FIFO holds only 32 reports and the IO thread drains one per
+// loop, so we must NOT dump a 73-packet waveform in one go -- it overflows and
+// packets are dropped. Instead a single paced tick flushes a bounded chunk of
+// the burst queue (beat grid / waveform, which take priority) or, when the queue
+// is empty, streams the current status frame for each loaded deck. That keeps
+// the FIFO well under 32 while still giving a continuous status keepalive.
+PioneerDDJ1000HID.sendReport = function(report) {
+    controller.send(report, report.length, 0, true);
 };
 
+// Queue burst packets; the paced tick drains them a chunk at a time.
+PioneerDDJ1000HID.pending = [];
 PioneerDDJ1000HID.sendBurst = function(packets) {
     for (let i = 0; i < packets.length; i++) {
-        PioneerDDJ1000HID.sendReport(packets[i], true);
+        PioneerDDJ1000HID.pending.push(packets[i]);
     }
+};
+
+PioneerDDJ1000HID.tick = function() {
+    const pending = PioneerDDJ1000HID.pending;
+    if (pending.length > 0) {
+        // Burst in progress: flush a chunk, skip status this tick.
+        const n = Math.min(PioneerDDJ1000HID.config.burstChunk, pending.length);
+        for (let i = 0; i < n; i++) {
+            PioneerDDJ1000HID.sendReport(pending.shift());
+        }
+        return;
+    }
+    // Idle: stream status for each loaded deck (keepalive + live state).
+    PioneerDDJ1000HID.decks.forEach((deck) => {
+        const st = PioneerDDJ1000HID.state[deck];
+        if (!st || !st.loaded) {
+            return;
+        }
+        PioneerDDJ1000HID.sendReport(DDJ1000Jog.statusPacket({
+            deck: deck,
+            playing: st.playing,
+            trackLoaded: true,
+            durationMs: st.durationMs,
+        }));
+    });
 };
 
 // ---------------------------------------------------------------------------
@@ -87,7 +119,7 @@ PioneerDDJ1000HID.init = function() {
         }
     });
     PioneerDDJ1000HID.statusTimer = engine.beginTimer(
-        PioneerDDJ1000HID.config.statusIntervalMs, PioneerDDJ1000HID.statusTick);
+        PioneerDDJ1000HID.config.tickMs, PioneerDDJ1000HID.tick);
 };
 
 PioneerDDJ1000HID.shutdown = function() {
@@ -100,15 +132,11 @@ PioneerDDJ1000HID.shutdown = function() {
         if (st && st.loadTimer) {
             engine.stopTimer(st.loadTimer);
         }
-        // Clear the deck's waveform (enable bit off) so the screen is tidy.
-        if (st && st.loaded) {
-            const empty = [];
-            for (let i = 0; i < DDJ1000Jog.WAVE_POINTS; i++) {
-                empty.push(DDJ1000Jog.wavePoint(0, 0, 0, 0));
-            }
-            PioneerDDJ1000HID.sendBurst(DDJ1000Jog.wavePackets(deck, empty, false, false));
-        }
     });
+    // Drop any queued burst and let the stream stop; performance mode reverts on
+    // its own within ~1 s, returning the jog to the standard view. (We can't
+    // reliably pace a clear burst while shutting down.)
+    PioneerDDJ1000HID.pending = [];
     PioneerDDJ1000HID.connections.forEach((c) => c.disconnect());
     PioneerDDJ1000HID.connections = [];
 };
@@ -189,25 +217,6 @@ PioneerDDJ1000HID.renderContext = function(deck) {
         }
     }
     PioneerDDJ1000HID.sendBurst(DDJ1000Jog.wavePackets(deck, points, false, true));
-};
-
-// ---------------------------------------------------------------------------
-// Status stream (keeps the deck view alive; carries playing/loaded/duration)
-// ---------------------------------------------------------------------------
-PioneerDDJ1000HID.statusTick = function() {
-    PioneerDDJ1000HID.decks.forEach((deck) => {
-        const st = PioneerDDJ1000HID.state[deck];
-        if (!st || !st.loaded) {
-            return;
-        }
-        const report = DDJ1000Jog.statusPacket({
-            deck: deck,
-            playing: st.playing,
-            trackLoaded: true,
-            durationMs: st.durationMs,
-        });
-        PioneerDDJ1000HID.sendReport(report, true);
-    });
 };
 
 // ---------------------------------------------------------------------------

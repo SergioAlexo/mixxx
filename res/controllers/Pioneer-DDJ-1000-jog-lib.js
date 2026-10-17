@@ -85,6 +85,29 @@ var DDJ1000Jog = (function() {
         return HDR.concat([0x50, 0x01, 0xf7]);
     }
 
+    // Post-handshake display-config SysEx (types 0x0a/0x0b/0x0c), captured from
+    // rekordbox's init burst. These move the jog from the idle logo into the
+    // performance-mode deck view; without them the unit shows a loading spinner
+    // after 0x15. Sent once on unlock. (The rest of rekordbox's init burst is
+    // LED/pad state, which this mapping already drives from Mixxx.)
+    var DECK_VIEW_HEX = [
+        "f00040050000020000000a0028002600183d3a0564502a5440141a0469130000000000000000000000000000000000000000000000f7",
+        "f00040050000020000000b310000000000f7",
+        "f00040050000020000000c0000020e0e000000f7",
+    ];
+
+    function hexToBytes(h) {
+        var out = [];
+        for (var i = 0; i + 1 < h.length; i += 2) {
+            out.push(parseInt(h.substr(i, 2), 16));
+        }
+        return out;
+    }
+
+    function deckViewSysex() {
+        return DECK_VIEW_HEX.map(hexToBytes);
+    }
+
     // Host challenge: 8 bytes (not all-00, not all-FF).
     function buildMsg12(hostChallenge) {
         var blocks = block(1, strBytes("PioneerDJ"))
@@ -422,6 +445,7 @@ var DDJ1000Jog = (function() {
         // handshake
         K: K, fnv1a: fnv1a, kConst: kConst,
         buildArm: buildArm, buildMsg12: buildMsg12, buildMsg14: buildMsg14,
+        deckViewSysex: deckViewSysex,
         parse13: parse13, predictUnitAnswer: predictUnitAnswer, hostAnswer: hostAnswer,
         isReady: isReady, isAccept: isAccept, msgType: msgType,
         // HID packets
