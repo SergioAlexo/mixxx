@@ -31,6 +31,9 @@ PioneerDDJ1000HID.config = {
     // matches that. Needs this branch's 5 ms timer floor -- stock Mixxx clamps
     // timers to 20 ms (50 Hz), which still works, just less smoothly.
     tickMs: 8,
+    // Keep the red SLIP view this long after slip_enabled goes off, longer
+    // than the MIDI mapping's slip-return gap (slipReturnMs, 50 ms).
+    slipHoldMs: 150,
     burstChunk: 3,          // burst packets per tick (~375/s, as before)
     idleDeckEvery: 125,     // empty decks only need a slow keepalive (~1 s, in ticks)
     slewGain: 0.15,         // fraction of the position error corrected per tick
@@ -118,6 +121,7 @@ PioneerDDJ1000HID.tick = function() {
             // play on until the deck has stopped, and a paused deck being
             // scratched is moving.
             paused: !st.playing && !PioneerDDJ1000HID.scratching(group),
+            slip: PioneerDDJ1000HID.slipping(deck, group),
             trackLoaded: true,
             durationMs: durationMs,
             elapsedMs: elapsedMs,
@@ -130,6 +134,19 @@ PioneerDDJ1000HID.tick = function() {
     for (let i = 0; i < n; i++) {
         PioneerDDJ1000HID.sendReport(pending.shift());
     }
+};
+
+// SLIP turns the jog screen red. The MIDI mapping returns to the slip position
+// by switching slip_enabled off for a moment (slipReturnMs, 50 ms); hold the
+// red view through such a gap instead of flashing the screen.
+PioneerDDJ1000HID.slipping = function(deck, group) {
+    const st = PioneerDDJ1000HID.state[deck];
+    const now = Date.now();
+    if (engine.getValue(group, "slip_enabled") > 0) {
+        st.slipSeenAt = now;
+        return true;
+    }
+    return now - (st.slipSeenAt || 0) < PioneerDDJ1000HID.config.slipHoldMs;
 };
 
 // engine.isScratching() only sees scratches started by THIS script; the scratch
