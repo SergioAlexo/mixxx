@@ -94,6 +94,20 @@ var DDJ1000Jog = (function() {
         return HDR.concat([0x03, 0x01, 0xf7]);
     }
 
+    // BEAT FX screen BPM: rekordbox sends this 0x0b + 0x0c pair whenever the
+    // BPM of the CH SELECT source changes. 0x0c carries BPM x 100 as four
+    // nibbles, MSB first (03 01 0a 06 = 0x31a6 = 127.10); an empty deck is
+    // sent as 120.00. Both carry a 00 before the type byte. The meaning of
+    // 0x0b's 31 byte is unknown; replayed verbatim.
+    function buildFxBpm(bpm) {
+        var v = Math.max(0, Math.min(0xffff, Math.round(bpm * 100)));
+        return [
+            HDR.concat([0x00, 0x0b, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7]),
+            HDR.concat([0x00, 0x0c, 0x00, 0x00, (v >> 12) & 0xf, (v >> 8) & 0xf,
+                (v >> 4) & 0xf, v & 0xf, 0x00, 0x00, 0xf7]),
+        ];
+    }
+
     // Post-handshake display-config SysEx (types 0x0a/0x0b/0x0c), captured from
     // rekordbox's init burst. These move the jog from the idle logo into the
     // performance-mode deck view; without them the unit shows a loading spinner
@@ -614,7 +628,7 @@ var DDJ1000Jog = (function() {
     return {
         // handshake
         K: K, fnv1a: fnv1a, kConst: kConst,
-        buildArm: buildArm, buildRequestState: buildRequestState,
+        buildArm: buildArm, buildRequestState: buildRequestState, buildFxBpm: buildFxBpm,
         buildMsg12: buildMsg12, buildMsg14: buildMsg14,
         deckViewSysex: deckViewSysex,
         parse13: parse13, predictUnitAnswer: predictUnitAnswer, hostAnswer: hostAnswer,
@@ -683,6 +697,12 @@ if (typeof module !== "undefined" && module.exports) {
         var st = J.statusPacket({deck: 2, playing: true, trackLoaded: true, durationMs: 211201});
         assert(st.length === 64 && st[0] === 0x20 && st[1] === 0x21, "status header");
         assert((st[5] & 0x80) !== 0 && st[9] === 0xb4, "status playing+loaded");
+        // Byte-exact against captured rekordbox FX BPM SysEx (decoded, 127.10;
+        // decoded3, 121.80).
+        var fb = J.buildFxBpm(127.1);
+        assert(hex(fb[0]) === "f00040050000020000000b310000000000f7", "fx bpm 0x0b " + hex(fb[0]));
+        assert(hex(fb[1]) === "f00040050000020000000c000003010a060000f7", "fx bpm 0x0c " + hex(fb[1]));
+        assert(hex(J.buildFxBpm(121.8)[1]) === "f00040050000020000000c0000020f09040000f7", "fx bpm 121.80");
         // 211201 ms = 3:31.201 -> 03 1f c9 00.
         assert(st[15] === 0x03 && st[16] === 0x1f && st[17] === 0xc9 && st[18] === 0x00, "status length");
         // Captured rekordbox frame: elapsed 0:09.388 = 00 09 84 01.
