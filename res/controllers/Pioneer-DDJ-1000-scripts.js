@@ -61,6 +61,9 @@ PioneerDDJ1000.config = {
     tempoRanges: [0.06, 0.10, 0.16, 1.00],
     doublePressMs: 400,
     slipReverseBeats: 8,
+    // SLIP returns by switching slip_enabled off for this long and back on.
+    // The engine reads it once per audio buffer, so keep it above one buffer.
+    slipReturnMs: 50,
     // At most this many sampler banks of 8 pads. Only banks of samplers that
     // exist in Mixxx are used; the mapping never adds samplers.
     samplerBanks: 8,
@@ -285,9 +288,14 @@ PioneerDDJ1000.newDeckState = function() {
         searchHeld: false,
         keySync: false,
         reverseTimer: 0,
+        // SLIP mode as set with the SLIP button. Mixxx's slip_enabled also
+        // goes on and off for loop rolls, PAD FX and returns.
+        slipMode: false,
+        // Running while slip is briefly off to return to the slip position.
+        slipReturnTimer: 0,
         gridMode: null,
         gridRemainder: 0,
-        // The deck's play and slip state from before a PAD FX brake or
+        // The deck's play state from before a PAD FX brake or
         // backspin, put back when the pad is released.
         trickRestore: null,
         lastLoad: 0,
@@ -540,7 +548,7 @@ PioneerDDJ1000.shutdown = function() {
     PioneerDDJ1000.rateTakeoverTimer = 0;
     PioneerDDJ1000.decks.forEach((deck) => {
         const state = PioneerDDJ1000.deck[deck];
-        [state.loadTimer, state.reverseTimer].filter((id) => id).forEach((id) => engine.stopTimer(id));
+        [state.loadTimer, state.reverseTimer, state.slipReturnTimer].filter((id) => id).forEach((id) => engine.stopTimer(id));
     });
     Object.keys(PioneerDDJ1000.heldUnits).forEach((unit) => PioneerDDJ1000.releaseUnit(unit));
     PioneerDDJ1000.connections.concat(PioneerDDJ1000.listeners).forEach((connection) => connection.disconnect());
@@ -800,7 +808,9 @@ PioneerDDJ1000.connectDeck = function(deck) {
     light("keylock", [n.masterTempo, n.tempoRange]);
     light("loop_enabled", [n.beatLoop4, n.beatLoop4Shift]);
     light("quantize", [n.quantize]);
-    light("slip_enabled", [n.slip]);
+    // SLIP stays lit while slip_enabled is briefly off for a return.
+    const slipOn = (value) => value > 0 || PioneerDDJ1000.deck[deck].slipMode;
+    light("slip_enabled", [n.slip], slipOn);
     light("reverse", [n.reverse]);
     light("reverseroll", [n.slipReverse]);
     light("pfl", [n.headphoneCue]);
@@ -810,7 +820,26 @@ PioneerDDJ1000.connectDeck = function(deck) {
         PioneerDDJ1000.updateLoopLeds(deck);
     });
     PioneerDDJ1000.connect(group, "slip_enabled", (value) => {
-        PioneerDDJ1000.sendUnit(PioneerDDJ1000.unitNote.slipOn, deck, value > 0);
+        PioneerDDJ1000.sendUnit(PioneerDDJ1000.unitNote.slipOn, deck, slipOn(value));
+    });
+    // With SLIP on, leaving a loop or REVERSE returns to where the track would
+    // have been, as on rekordbox.
+    PioneerDDJ1000.listen(group, "loop_enabled", (value) => {
+        if (!value) {
+            PioneerDDJ1000.slipReturn(deck);
+        }
+    });
+    PioneerDDJ1000.listen(group, "reverse", (value) => {
+        if (!value) {
+            PioneerDDJ1000.slipReturn(deck);
+        }
+    });
+    // A loop roll ends by switching slip off, also when SLIP was on before
+    // it, and loading a track does too: switch it on again.
+    PioneerDDJ1000.listen(group, "slip_enabled", (value) => {
+        if (!value) {
+            PioneerDDJ1000.slipResume(deck);
+        }
     });
     PioneerDDJ1000.connect(group, "playposition", (value) => {
         PioneerDDJ1000.deck[deck].position = {value: value, at: Date.now()};
@@ -1013,10 +1042,18 @@ PioneerDDJ1000.play = function(_channel, _control, value, _status, group) {
     const cfg = PioneerDDJ1000.config;
     if (engine.isBrakeActive(deck)) {
         engine.brake(deck, false);
-    } else if (cfg.pauseBrake && engine.getValue(group, "play") && !engine.isScratching(deck)) {
-        engine.brake(deck, true, cfg.pauseBrakeFactor);
+        PioneerDDJ1000.slipReturn(deck);
+    } else if (engine.getValue(group, "play")) {
+        if (cfg.pauseBrake && !engine.isScratching(deck)) {
+            engine.brake(deck, true, cfg.pauseBrakeFactor);
+        } else {
+            engine.setValue(group, "play", 0);
+        }
     } else {
-        PioneerDDJ1000.toggle(group, "play");
+        // With SLIP on, a pause keeps the track running underneath: play on
+        // from where it would have been.
+        engine.setValue(group, "play", 1);
+        PioneerDDJ1000.slipReturn(deck);
     }
 };
 
@@ -1215,9 +1252,48 @@ PioneerDDJ1000.quantize = function(_channel, _control, value, _status, group) {
 };
 
 PioneerDDJ1000.slip = function(_channel, _control, value, _status, group) {
-    if (value) {
-        PioneerDDJ1000.toggle(group, "slip_enabled");
+    if (!value) {
+        return;
     }
+    const deck = PioneerDDJ1000.deckFromGroup(group);
+    const state = PioneerDDJ1000.deck[deck];
+    if (state.slipReturnTimer) {
+        engine.stopTimer(state.slipReturnTimer);
+        state.slipReturnTimer = 0;
+    }
+    state.slipMode = !state.slipMode;
+    engine.setValue(group, "slip_enabled", state.slipMode ? 1 : 0);
+    // Redraw: slip_enabled may not have changed (it is already off during
+    // a return, or already on during a loop roll).
+    PioneerDDJ1000.deckLed(deck, PioneerDDJ1000.deckNote.slip, state.slipMode);
+    PioneerDDJ1000.sendUnit(PioneerDDJ1000.unitNote.slipOn, deck, state.slipMode);
+};
+
+// Mixxx only returns to the slip position when slip_enabled is switched off,
+// while rekordbox's SLIP returns as soon as a scratch, pause, loop or reverse
+// ends. So switch slip off briefly and back on. Switching it on again also
+// takes up the deck's current speed: the engine keeps the speed it had when
+// slip was switched on (zero when SLIP was pressed on a paused deck).
+PioneerDDJ1000.slipReturn = function(deck) {
+    if (!PioneerDDJ1000.deck[deck].slipMode) {
+        return;
+    }
+    PioneerDDJ1000.slipResume(deck);
+    engine.setValue(PioneerDDJ1000.group(deck), "slip_enabled", 0);
+};
+
+// Switch slip on again shortly, if SLIP is on.
+PioneerDDJ1000.slipResume = function(deck) {
+    const state = PioneerDDJ1000.deck[deck];
+    if (!state.slipMode || state.slipReturnTimer) {
+        return;
+    }
+    state.slipReturnTimer = engine.beginTimer(PioneerDDJ1000.config.slipReturnMs, () => {
+        state.slipReturnTimer = 0;
+        if (state.slipMode) {
+            engine.setValue(PioneerDDJ1000.group(deck), "slip_enabled", 1);
+        }
+    }, true);
 };
 
 // SHIFT + SLIP: VINYL mode for the jog.
@@ -1571,7 +1647,10 @@ PioneerDDJ1000.watchFreeSpin = function(deck, now) {
         state.freeSpin = false;
         state.settling = true;
         state.settledAt = now;
-        engine.scratchDisable(deck, true);
+        // With SLIP on the track jumps back at once, so there is no speed to
+        // ramp back up to.
+        engine.scratchDisable(deck, !state.slipMode);
+        PioneerDDJ1000.slipReturn(deck);
     }
 };
 
@@ -2140,7 +2219,6 @@ PioneerDDJ1000.padTrick = function(deck, spinback, value) {
         if (!state.trickRestore) {
             state.trickRestore = {
                 play: engine.getValue(group, "play"),
-                slip: engine.getValue(group, "slip_enabled"),
             };
         }
         engine.setValue(group, "slip_enabled", 1);
@@ -2155,7 +2233,11 @@ PioneerDDJ1000.padTrick = function(deck, spinback, value) {
         if (state.trickRestore.play) {
             engine.setValue(group, "play", 1);
         }
-        engine.setValue(group, "slip_enabled", state.trickRestore.slip);
+        if (state.slipMode) {
+            PioneerDDJ1000.slipReturn(deck);
+        } else {
+            engine.setValue(group, "slip_enabled", 0);
+        }
         state.trickRestore = null;
     }
 };
