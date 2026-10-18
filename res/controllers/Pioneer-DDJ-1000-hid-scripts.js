@@ -122,6 +122,7 @@ PioneerDDJ1000HID.tick = function() {
             // scratched is moving.
             paused: !st.playing && !PioneerDDJ1000HID.scratching(group),
             slip: PioneerDDJ1000HID.slipping(deck, group),
+            onAir: PioneerDDJ1000HID.onAir(group),
             trackLoaded: true,
             durationMs: durationMs,
             elapsedMs: elapsedMs,
@@ -147,6 +148,18 @@ PioneerDDJ1000HID.slipping = function(deck, group) {
         return true;
     }
     return now - (st.slipSeenAt || 0) < PioneerDDJ1000HID.config.slipHoldMs;
+};
+
+// The jog screen is bright while the deck is on air and dimmed otherwise.
+// rekordbox follows the channel fader; also treat a crossfader that fully
+// cuts the deck's side as off air.
+PioneerDDJ1000HID.onAir = function(group) {
+    if (engine.getValue(group, "volume") <= 0) {
+        return false;
+    }
+    const xfader = engine.getValue("[Master]", "crossfader");
+    const orientation = engine.getValue(group, "orientation");
+    return !((orientation === 0 && xfader >= 0.99) || (orientation === 2 && xfader <= -0.99));
 };
 
 // engine.isScratching() only sees scratches started by THIS script; the scratch

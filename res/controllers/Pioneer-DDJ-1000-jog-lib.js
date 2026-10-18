@@ -389,6 +389,11 @@ var DDJ1000Jog = (function() {
         if (opts.slip) {
             r[2] |= 0x01;
         }
+        // byte3 bit1 = ON AIR: rekordbox sends 0x0a while the channel is
+        // audible (fader up), 0x08 when not; the unit dims the jog screen.
+        if (typeof opts.onAir === "boolean") {
+            r[3] = opts.onAir ? (r[3] | 0x02) : (r[3] & ~0x02);
+        }
         var i;
         if (typeof opts.elapsedMs === "number" && opts.elapsedMs >= 0) {
             var e = timeBytes(opts.elapsedMs);
