@@ -510,7 +510,27 @@ var DDJ1000Jog = (function() {
     // 0..255, from engine.getWaveformSummary) to 600 waveform columns. Outer
     // bar height = overall amplitude; inner bar = low-band (bass) amplitude.
     // Colour mixes the three bands: low->red, mid->green, high->blue, the
-    // convention Mixxx's own RGB waveform uses.
+    // convention Mixxx's own RGB waveform uses. Each band is first normalized
+    // to its own track peak (bass otherwise dominates and everything is red),
+    // then the hue is drawn at full saturation the way rekordbox does: outer
+    // bar brightest channel = 189, inner bar the same hue at 255.
+    // WAVE_SATURATION pulls the common (grey) part out of the mix so similar
+    // band levels still give a visible hue instead of a pastel/white column.
+    var WAVE_OUTER_BRIGHT = 189, WAVE_INNER_BRIGHT = 255, WAVE_INNER_FRAC = 0.5;
+    var WAVE_SATURATION = 0.6;
+
+    function hueColour(r, g, b, bright) {
+        var grey = Math.min(r, g, b) * WAVE_SATURATION;
+        r -= grey;
+        g -= grey;
+        b -= grey;
+        var m = Math.max(r, g, b);
+        if (m <= 0) {
+            return rgb565(bright, bright, bright);
+        }
+        return rgb565(r * bright / m, g * bright / m, b * bright / m);
+    }
+
     function wavePointsFromSummary(summary) {
         var n = summary.length;
         if (!n) {
@@ -519,20 +539,26 @@ var DDJ1000Jog = (function() {
         // Normalize to the track's peak so the loudest part fills the full
         // column height, as rekordbox does -- Mixxx's raw overview samples
         // rarely approach 255, so a fixed /255 scale looks too short.
-        var peak = 1;
+        var peak = [1, 1, 1, 1];
         for (var j = 0; j < n; j++) {
-            var a = summary[j] ? (summary[j][0] & 0xff) : 0;
-            if (a > peak) {
-                peak = a;
+            for (var k = 0; k < 4; k++) {
+                var a = summary[j] ? (summary[j][k] & 0xff) : 0;
+                if (a > peak[k]) {
+                    peak[k] = a;
+                }
             }
         }
-        var scale = WAVE_MAX_H / peak;
+        var scale = WAVE_MAX_H / peak[0];
         var pts = [];
         for (var i = 0; i < WAVE_POINTS; i++) {
             var col = summary[Math.floor(i * n / WAVE_POINTS)] || [0, 0, 0, 0];
-            var all = col[0] & 0xff, low = col[1] & 0xff, mid = col[2] & 0xff, high = col[3] & 0xff;
-            var colOuter = rgb565(low, mid, high);
-            pts.push(wavePoint(all * scale, low * scale, colOuter, rgb565(255, 255, 255)));
+            var all = col[0] & 0xff;
+            var r = (col[1] & 0xff) / peak[1];
+            var g = (col[2] & 0xff) / peak[2];
+            var b = (col[3] & 0xff) / peak[3];
+            pts.push(wavePoint(all * scale, all * scale * WAVE_INNER_FRAC,
+                hueColour(r, g, b, WAVE_OUTER_BRIGHT),
+                hueColour(r, g, b, WAVE_INNER_BRIGHT)));
         }
         return pts;
     }
