@@ -264,6 +264,8 @@ PioneerDDJ1000.beatFx = {
     on: false,
     rolling: [],
     rollSlip: false,
+    // BPM x 100 last sent to the FX screen, or null to resend.
+    bpmSent: null,
 };
 
 PioneerDDJ1000.colorFx = 0;
@@ -732,6 +734,8 @@ PioneerDDJ1000.incomingData = function(data) {
             // loading spinner) by replaying rekordbox's full post-handshake init
             // burst.
             PioneerDDJ1000.jogReplayInitBurst();
+            // The burst sets the FX screen to its captured 120.00 BPM.
+            PioneerDDJ1000.beatFx.bpmSent = null;
         }
     }
 };
@@ -786,6 +790,7 @@ PioneerDDJ1000.tick = function() {
         PioneerDDJ1000.updateSearch(deck, now);
         PioneerDDJ1000.updateClock(deck);
     });
+    PioneerDDJ1000.updateFxBpm();
 };
 
 // ---------------------------------------------------------------------------
@@ -2039,6 +2044,33 @@ PioneerDDJ1000.beatStep = function(direction, note) {
 
 PioneerDDJ1000.beatDown = PioneerDDJ1000.beatStep(-1, PioneerDDJ1000.beatFxNote.beatDown);
 PioneerDDJ1000.beatUp = PioneerDDJ1000.beatStep(1, PioneerDDJ1000.beatFxNote.beatUp);
+
+// The FX screen's BPM. With software connected the unit shows what the host
+// sends (DDJ1000Jog.buildFxBpm), as rekordbox does: the BPM of the deck CH
+// SELECT points at. For MASTER, MIC and SAMPLER, and before the unit has
+// reported CH SELECT, it is the sync leader, else the first playing deck.
+PioneerDDJ1000.fxBpmDeck = function() {
+    const target = PioneerDDJ1000.beatFx.target;
+    if (typeof target === "number") {
+        return target;
+    }
+    const decks = PioneerDDJ1000.decks;
+    return decks.find((deck) => engine.getValue(PioneerDDJ1000.group(deck), "sync_leader") > 0)
+        || decks.find((deck) => engine.getValue(PioneerDDJ1000.group(deck), "play") > 0)
+        || null;
+};
+
+PioneerDDJ1000.updateFxBpm = function() {
+    const deck = PioneerDDJ1000.fxBpmDeck();
+    const bpm = deck ? engine.getValue(PioneerDDJ1000.group(deck), "bpm") : 0;
+    // rekordbox sends 120.00 for an empty deck.
+    const value = Math.round((bpm > 0 ? bpm : 120) * 100);
+    if (value === PioneerDDJ1000.beatFx.bpmSent) {
+        return;
+    }
+    PioneerDDJ1000.beatFx.bpmSent = value;
+    DDJ1000Jog.buildFxBpm(value / 100).forEach(PioneerDDJ1000.jogSend);
+};
 
 // SHIFT + BEAT < / > (AUTO / TAP in rekordbox): Mixxx effects follow the deck
 // tempo on their own, so these only light up.
