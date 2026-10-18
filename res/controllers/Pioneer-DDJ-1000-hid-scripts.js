@@ -34,6 +34,13 @@ PioneerDDJ1000HID.config = {
     // Keep the red SLIP view this long after slip_enabled goes off, longer
     // than the MIDI mapping's slip-return gap (slipReturnMs, 50 ms).
     slipHoldMs: 150,
+    // End of track warning: in the last endWarningSeconds of a playing track
+    // the jog ring blinks, one on/off step per endWarningSlowMs at the start
+    // down to endWarningFastMs at the end (rekordbox: ~1 s steps at 20-25 s
+    // left, ~0.2 s in the last second).
+    endWarningSeconds: 30,
+    endWarningSlowMs: 1000,
+    endWarningFastMs: 200,
     burstChunk: 3,          // burst packets per tick (~375/s, as before)
     idleDeckEvery: 125,     // empty decks only need a slow keepalive (~1 s, in ticks)
     slewGain: 0.15,         // fraction of the position error corrected per tick
@@ -123,6 +130,7 @@ PioneerDDJ1000HID.tick = function() {
             paused: !st.playing && !PioneerDDJ1000HID.scratching(group),
             slip: PioneerDDJ1000HID.slipping(deck, group),
             onAir: PioneerDDJ1000HID.onAir(group),
+            ringLit: PioneerDDJ1000HID.ringLit(deck, st.playing, durationMs - elapsedMs),
             trackLoaded: true,
             durationMs: durationMs,
             elapsedMs: elapsedMs,
@@ -148,6 +156,28 @@ PioneerDDJ1000HID.slipping = function(deck, group) {
         return true;
     }
     return now - (st.slipSeenAt || 0) < PioneerDDJ1000HID.config.slipHoldMs;
+};
+
+// The jog ring is lit, except near the end of a playing track, where it
+// blinks faster the closer the end is.
+PioneerDDJ1000HID.ringLit = function(deck, playing, leftMs) {
+    const cfg = PioneerDDJ1000HID.config;
+    const st = PioneerDDJ1000HID.state[deck];
+    const now = Date.now();
+    const near = Math.max(0, Math.min(1, leftMs / (cfg.endWarningSeconds * 1000)));
+    let lit = true;
+    if (playing && near < 1) {
+        lit = st.ringLit === false ? false : true;
+        const stepMs = cfg.endWarningFastMs + (cfg.endWarningSlowMs - cfg.endWarningFastMs) * near;
+        if (now - (st.ringAt || 0) >= stepMs) {
+            lit = !lit;
+        }
+    }
+    if (lit !== (st.ringLit !== false)) {
+        st.ringAt = now;
+    }
+    st.ringLit = lit;
+    return lit;
 };
 
 // The jog screen is bright while the deck is on air and dimmed otherwise.

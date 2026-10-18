@@ -394,6 +394,11 @@ var DDJ1000Jog = (function() {
         if (typeof opts.onAir === "boolean") {
             r[3] = opts.onAir ? (r[3] | 0x02) : (r[3] & ~0x02);
         }
+        // byte4 bit0 = jog ring lit: rekordbox clears it on and off to blink
+        // the ring near the end of a track (0x11 lit, 0x10 dark).
+        if (opts.ringLit === false) {
+            r[4] &= ~0x01;
+        }
         var i;
         if (typeof opts.elapsedMs === "number" && opts.elapsedMs >= 0) {
             var e = timeBytes(opts.elapsedMs);
