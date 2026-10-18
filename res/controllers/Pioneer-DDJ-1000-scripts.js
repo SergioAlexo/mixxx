@@ -42,6 +42,10 @@ PioneerDDJ1000.config = {
     vinylRpm: 33 + 1 / 3,
     scratchAlpha: 1 / 8,
     scratchBeta: 1 / 8 / 32,
+    // PLAY on a playing deck brakes it to a stop instead of cutting it.
+    // Factor 60 stops from 1x in ~0.5 s, matching rekordbox.
+    pauseBrake: true,
+    pauseBrakeFactor: 60,
     // Pitch bend: Mixxx "jog" units per full turn of the outer ring.
     bendPerRevolution: 200,
     // A released platter keeps driving the record while it turns faster than
@@ -998,8 +1002,20 @@ PioneerDDJ1000.updateClock = function(deck) {
 // Transport, tempo, key
 // ---------------------------------------------------------------------------
 
+// Pausing a playing deck brakes it like a turntable, as rekordbox does (its
+// captured position runs down from 1x to 0 in about half a second). Pressing
+// PLAY again during the brake cancels it and the deck plays on.
 PioneerDDJ1000.play = function(_channel, _control, value, _status, group) {
-    if (value) {
+    if (!value) {
+        return;
+    }
+    const deck = PioneerDDJ1000.deckFromGroup(group);
+    const cfg = PioneerDDJ1000.config;
+    if (engine.isBrakeActive(deck)) {
+        engine.brake(deck, false);
+    } else if (cfg.pauseBrake && engine.getValue(group, "play") && !engine.isScratching(deck)) {
+        engine.brake(deck, true, cfg.pauseBrakeFactor);
+    } else {
         PioneerDDJ1000.toggle(group, "play");
     }
 };
@@ -1541,7 +1557,11 @@ PioneerDDJ1000.watchFreeSpin = function(deck, now) {
     if (state.settling && now - state.settledAt > 150) {
         state.settling = false; // platter has come to rest
     }
-    if (state.touched || !engine.isScratching(deck)) {
+    // A brake or backspin runs as a scratch too (scratch2_enable), with the
+    // platter untouched; it is not a released platter, so leave it alone --
+    // ending it here would cut every brake off on the next tick.
+    if (state.touched || !engine.isScratching(deck) ||
+            engine.isBrakeActive(deck) || engine.isSpinbackActive(deck)) {
         state.freeSpin = false;
         return;
     }

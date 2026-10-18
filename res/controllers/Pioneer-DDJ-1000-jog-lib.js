@@ -336,17 +336,40 @@ var DDJ1000Jog = (function() {
         0x00, 0x86, 0x40, 0xd3, 0xff, 0x00, 0x00, 0x80, 0x00, 0x00,
         0x00, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86, 0x40,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x15, 0x00, 0x00, 0x01, 0x00, 0x02, 0x0d, 0x00,
-        0x00, 0x00, 0x00, 0x00];
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x01, 0x00,
+        0x02, 0x0d, 0x00, 0x00];
 
-    // opts: { deck, playing (bool), trackLoaded (bool), durationMs, elapsedMs }.
+    function putU24le(r, at, v) {
+        r[at] = v & 0xff;
+        r[at + 1] = (v >> 8) & 0xff;
+        r[at + 2] = (v >> 16) & 0xff;
+    }
+
+    // A time as the unit encodes it: minutes, seconds, then milliseconds as a
+    // u16 LE (4 bytes), e.g. 0:09.388 = 00 09 84 01.
+    function timeBytes(ms) {
+        ms = Math.max(0, Math.round(ms));
+        var sec = Math.floor(ms / 1000);
+        return [Math.min(255, Math.floor(sec / 60)), sec % 60,
+            (ms % 1000) & 0xff, ((ms % 1000) >> 8) & 0xff];
+    }
+
+    // opts: { deck, playing (bool), trackLoaded (bool), durationMs, elapsedMs,
+    //         cueMs, bpm, ratePct, paused }.
     // Returns one 64-byte status report. Fields that are not yet decoded keep
     // the captured template value.
     //
-    // Playback position (the jog's moving cursor) is bytes 11-13, a 24-bit
-    // big-endian count of 1/256-second units: field = elapsed_seconds * 256.
-    // Decoded empirically from rekordbox captures (byte 12 ticks once per track-
-    // second; the field advances at 256/s scaled by deck tempo).
+    // Bytes 11-14 = elapsed time, bytes 15-18 = track length, both timeBytes()
+    // (min, sec, ms u16 LE). Verified on rekordbox playback captures: elapsed
+    // advances 1.0 s per second, ms runs 0..999. (An earlier reading as a
+    // 1/256 s counter put frac*256 into the ms field, so the platter only ran
+    // 0..255 ms of every second and then jumped.)
+    //
+    // From the rekordbox cue capture: bytes 31-33 = CUE point in ms (u24 LE),
+    // bytes 55-57 = the active cue (same value unless a hot cue was called),
+    // byte 58 = cue flags (0x01 cue set, 0x00 none). Bytes 21-22 = BPM as u16 LE
+    // ((tenths << 12) | whole), bytes 23-24 = tempo in 0.01 % (s16 LE), bytes
+    // 38-39 repeat the BPM.
     function statusPacket(opts) {
         var r = STATUS_TEMPLATE.slice(0);
         r[0] = (opts.deck << 4) & 0xf0;
@@ -355,24 +378,97 @@ var DDJ1000Jog = (function() {
         }
         // byte5 bit7 = playing.
         r[5] = (opts.playing ? 0x80 : 0x00) | (r[5] & 0x7f);
+        // byte2 bit1 = deck paused: rekordbox sends 0x1a while the deck is at
+        // rest (and while it brakes to a stop), 0x18 while it plays -- incl.
+        // a CUE preview from a paused deck. The unit dims the platter on it.
+        if (opts.paused) {
+            r[2] |= 0x02;
+        }
+        var i;
         if (typeof opts.elapsedMs === "number" && opts.elapsedMs >= 0) {
-            var f = Math.round(opts.elapsedMs * 256 / 1000);
-            if (f < 0) {
-                f = 0;
+            var e = timeBytes(opts.elapsedMs);
+            for (i = 0; i < 4; i++) {
+                r[11 + i] = e[i];
             }
-            r[10] = (f >> 24) & 0xff; // effectively 0 for any real track
-            r[11] = (f >> 16) & 0xff;
-            r[12] = (f >> 8) & 0xff;
-            r[13] = f & 0xff;
         }
         if (typeof opts.durationMs === "number" && opts.durationMs > 0) {
-            var d = opts.durationMs | 0;
-            r[15] = 0x02;
-            r[16] = d & 0xff;
-            r[17] = (d >> 8) & 0xff;
-            r[18] = (d >> 16) & 0xff;
+            var d = timeBytes(opts.durationMs);
+            for (i = 0; i < 4; i++) {
+                r[15 + i] = d[i];
+            }
+        }
+        if (typeof opts.cueMs === "number") {
+            if (opts.cueMs >= 0) {
+                var c = Math.round(opts.cueMs);
+                putU24le(r, 31, c);
+                putU24le(r, 55, c);
+                r[58] = 0x01;
+            } else {
+                putU24le(r, 31, 0);
+                putU24le(r, 55, 0);
+                r[58] = 0x00;
+            }
+        }
+        if (typeof opts.bpm === "number" && opts.bpm > 0) {
+            var t = Math.round(opts.bpm * 10);
+            var v = (((t % 10) << 12) | (Math.floor(t / 10) & 0xfff)) & 0xffff;
+            r[21] = r[38] = v & 0xff;
+            r[22] = r[39] = (v >> 8) & 0xff;
+        }
+        if (typeof opts.ratePct === "number") {
+            var p = clamp(opts.ratePct * 100, -32768, 32767) & 0xffff;
+            r[23] = p & 0xff;
+            r[24] = (p >> 8) & 0xff;
         }
         return r;
+    }
+
+    // Split a transfer body over 64-byte reports: hdr(6) + 58 payload bytes each.
+    function chunked(deck, msg, body) {
+        var room = REPORT_LEN - 6;
+        var total = Math.max(1, Math.ceil(body.length / room));
+        var pkts = [];
+        for (var n = 1; n <= total; n++) {
+            pkts.push(padTo(hdr(deck, msg, n, total)
+                .concat(body.slice((n - 1) * room, n * room)), REPORT_LEN));
+        }
+        return pkts;
+    }
+
+    // 0x30 hot-cue list, sent by rekordbox after the beat grid on every load and
+    // again whenever a hot cue changes: track length, then 16 slots of
+    // [type 0x01][colour][timeBytes(ms)]; empty slots are zero. Colour is the
+    // unit's pad-colour number (rekordbox's default green is 0x16).
+    // cues = [{slot: 0..15, ms, color}, ...].
+    var HOTCUE_SLOTS = 16;
+    function hotCuePackets(deck, durationMs, cues) {
+        var body = timeBytes(durationMs);
+        var slots = [];
+        var i;
+        for (i = 0; i < HOTCUE_SLOTS; i++) {
+            slots.push([0, 0, 0, 0, 0, 0]);
+        }
+        for (i = 0; i < (cues || []).length; i++) {
+            var c = cues[i];
+            if (c.slot >= 0 && c.slot < HOTCUE_SLOTS && c.ms >= 0) {
+                slots[c.slot] = [0x01, (c.color === undefined ? 0x16 : c.color) & 0xff]
+                    .concat(timeBytes(c.ms));
+            }
+        }
+        for (i = 0; i < HOTCUE_SLOTS; i++) {
+            body = body.concat(slots[i]);
+        }
+        return chunked(deck, 0x30, body);
+    }
+
+    // 0x2D, sent right after 0x30: track length, then a block that is identical
+    // in every rekordbox capture (meaning not decoded; replayed verbatim).
+    function cueInfoPackets(deck, durationMs) {
+        var body = timeBytes(durationMs).concat([0x0a, 0x00]);
+        for (var i = 0; i < 10; i++) {
+            body = body.concat([0x9e, 0x2f, 0x27, 0x01, 0x00]);
+        }
+        return chunked(deck, 0x2d, body);
     }
 
     // Retarget a prebuilt report (byte0 high nibble) to another deck.
@@ -488,6 +584,7 @@ var DDJ1000Jog = (function() {
         rgb565: rgb565, wavePoint: wavePoint, wavePackets: wavePackets,
         artPackets: artPackets, beatgridPackets: beatgridPackets, makeBeats: makeBeats,
         statusPacket: statusPacket, retarget: retarget, patternPoints: patternPoints,
+        timeBytes: timeBytes, hotCuePackets: hotCuePackets, cueInfoPackets: cueInfoPackets,
         wavePointsFromSummary: wavePointsFromSummary,
     };
 })();
@@ -545,7 +642,28 @@ if (typeof module !== "undefined" && module.exports) {
         var st = J.statusPacket({deck: 2, playing: true, trackLoaded: true, durationMs: 211201});
         assert(st.length === 64 && st[0] === 0x20 && st[1] === 0x21, "status header");
         assert((st[5] & 0x80) !== 0 && st[9] === 0xb4, "status playing+loaded");
-        assert(st[16] === 0x01 && st[17] === 0x39 && st[18] === 0x03, "status duration u24");
+        // 211201 ms = 3:31.201 -> 03 1f c9 00.
+        assert(st[15] === 0x03 && st[16] === 0x1f && st[17] === 0xc9 && st[18] === 0x00, "status length");
+        // Captured rekordbox frame: elapsed 0:09.388 = 00 09 84 01.
+        var se = J.statusPacket({deck: 1, elapsedMs: 9388});
+        assert(hex(se.slice(11, 15)) === "00098401", "status elapsed " + hex(se.slice(11, 15)));
+        // Byte-exact against captured rekordbox 0x30 / 0x2D (decoded4, deck 1,
+        // track 2:39.169, hot cues A/B at 3.063 s / 3.932 s).
+        var hc2 = J.hotCuePackets(1, 159169, [{slot: 0, ms: 3063}, {slot: 1, ms: 3932}]);
+        assert(hc2.length === 2 && hex(hc2[0]).indexOf("1030010002000227a900011600033f00011600" +
+            "03a40300") === 0, "hotcue 0x30 " + hex(hc2[0]));
+        assert(hex(hc2[1]) === "103002000200" + "00".repeat(58), "hotcue 0x30 pkt2");
+        var ci = J.cueInfoPackets(1, 159169);
+        assert(hex(ci[0]) === "102d010001000227a9000a00" + "9e2f270100".repeat(10) + "0000",
+            "cue info 0x2d " + hex(ci[0]));
+        // Cue/BPM/tempo encodings, checked against captured rekordbox frames.
+        var sc = J.statusPacket({deck: 1, cueMs: 9149, bpm: 126.6, ratePct: -1.06});
+        assert(sc[31] === 0xbd && sc[32] === 0x23 && sc[55] === 0xbd && sc[56] === 0x23 &&
+            sc[58] === 0x01, "status cue");
+        assert(sc[21] === 0x7e && sc[22] === 0x60 && sc[23] === 0x96 && sc[24] === 0xff, "status bpm/tempo");
+        assert(sc[61] === 0x0d, "status tail aligned");
+        assert(J.statusPacket({deck: 1, paused: true})[2] === 0x1a &&
+            J.statusPacket({deck: 1, paused: false})[2] === 0x18, "status paused flag");
         // eslint-disable-next-line no-console
         console.log("self-test OK: k=" + J.K.toString(16) +
             ", wave=" + wp.length + " pkts, beatgrid=" + bg.length +
