@@ -355,7 +355,7 @@ var DDJ1000Jog = (function() {
     }
 
     // opts: { deck, playing (bool), trackLoaded (bool), durationMs, elapsedMs,
-    //         cueMs, bpm, ratePct, paused }.
+    //         cueMs, bpm, ratePct, paused, slip }.
     // Returns one 64-byte status report. Fields that are not yet decoded keep
     // the captured template value.
     //
@@ -383,6 +383,11 @@ var DDJ1000Jog = (function() {
         // a CUE preview from a paused deck. The unit dims the platter on it.
         if (opts.paused) {
             r[2] |= 0x02;
+        }
+        // byte2 bit0 = SLIP on: rekordbox sends 0x19 (0x1b paused) for as long
+        // as SLIP is on; the unit draws the jog screen red.
+        if (opts.slip) {
+            r[2] |= 0x01;
         }
         var i;
         if (typeof opts.elapsedMs === "number" && opts.elapsedMs >= 0) {
