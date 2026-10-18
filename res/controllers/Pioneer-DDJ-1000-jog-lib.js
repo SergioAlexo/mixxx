@@ -94,18 +94,57 @@ var DDJ1000Jog = (function() {
         return HDR.concat([0x03, 0x01, 0xf7]);
     }
 
-    // BEAT FX screen BPM: rekordbox sends this 0x0b + 0x0c pair whenever the
-    // BPM of the CH SELECT source changes. 0x0c carries BPM x 100 as four
-    // nibbles, MSB first (03 01 0a 06 = 0x31a6 = 127.10); an empty deck is
-    // sent as 120.00. Both carry a 00 before the type byte. The meaning of
-    // 0x0b's 31 byte is unknown; replayed verbatim.
+    // 8-bit data -> 7-bit SysEx bytes as one LSB-first bit stream: the inverse
+    // of the unit's unpacker (USB1 FUN_1c091af0).
+    function pack7(data) {
+        var out = [];
+        var acc = 0;
+        var bits = 0;
+        for (var i = 0; i < data.length; i++) {
+            acc |= (data[i] & 0xff) << bits;
+            bits += 8;
+            while (bits >= 7) {
+                out.push(acc & 0x7f);
+                acc >>>= 7;
+                bits -= 7;
+            }
+        }
+        if (bits > 0) {
+            out.push(acc & 0x7f);
+        }
+        return out;
+    }
+
+    function asciiPadded(text, length) {
+        var out = [];
+        for (var i = 0; i < length; i++) {
+            out.push(i < text.length ? text.charCodeAt(i) & 0x7f : 0);
+        }
+        return out;
+    }
+
+    // With software connected the BEAT FX screen shows what the host sends
+    // (USB1 FUN_1c091944 dispatches 00 0a / 00 0b / 00 0c; all three carry a
+    // 00 before the type byte):
+    //   0x0a  effect name: 00 + 32 ASCII bytes, 7-bit packed, after a
+    //         00 <packed+2> 00 <packed> length header ("LOW CUT ECHO").
+    //   0x0b  beat value: 5 ASCII bytes, 7-bit packed ("1" = 31 00 00 00 00 00).
+    //   0x0c  BPM x 100 as four nibbles, MSB first (03 01 0a 06 = 127.10),
+    //         then 00 00. rekordbox sends 120.00 for an empty deck.
+    function buildFxName(name) {
+        var packed = pack7([0x00].concat(asciiPadded(name, 32)));
+        return HDR.concat([0x00, 0x0a, 0x00, packed.length + 2, 0x00, packed.length])
+            .concat(packed).concat([0xf7]);
+    }
+
+    function buildFxBeat(text) {
+        return HDR.concat([0x00, 0x0b]).concat(pack7(asciiPadded(text, 5))).concat([0xf7]);
+    }
+
     function buildFxBpm(bpm) {
         var v = Math.max(0, Math.min(0xffff, Math.round(bpm * 100)));
-        return [
-            HDR.concat([0x00, 0x0b, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7]),
-            HDR.concat([0x00, 0x0c, 0x00, 0x00, (v >> 12) & 0xf, (v >> 8) & 0xf,
-                (v >> 4) & 0xf, v & 0xf, 0x00, 0x00, 0xf7]),
-        ];
+        return HDR.concat([0x00, 0x0c, 0x00, 0x00, (v >> 12) & 0xf, (v >> 8) & 0xf,
+            (v >> 4) & 0xf, v & 0xf, 0x00, 0x00, 0xf7]);
     }
 
     // Post-handshake display-config SysEx (types 0x0a/0x0b/0x0c), captured from
@@ -628,7 +667,8 @@ var DDJ1000Jog = (function() {
     return {
         // handshake
         K: K, fnv1a: fnv1a, kConst: kConst,
-        buildArm: buildArm, buildRequestState: buildRequestState, buildFxBpm: buildFxBpm,
+        buildArm: buildArm, buildRequestState: buildRequestState,
+        pack7: pack7, buildFxName: buildFxName, buildFxBeat: buildFxBeat, buildFxBpm: buildFxBpm,
         buildMsg12: buildMsg12, buildMsg14: buildMsg14,
         deckViewSysex: deckViewSysex,
         parse13: parse13, predictUnitAnswer: predictUnitAnswer, hostAnswer: hostAnswer,
@@ -697,12 +737,14 @@ if (typeof module !== "undefined" && module.exports) {
         var st = J.statusPacket({deck: 2, playing: true, trackLoaded: true, durationMs: 211201});
         assert(st.length === 64 && st[0] === 0x20 && st[1] === 0x21, "status header");
         assert((st[5] & 0x80) !== 0 && st[9] === 0xb4, "status playing+loaded");
-        // Byte-exact against captured rekordbox FX BPM SysEx (decoded, 127.10;
-        // decoded3, 121.80).
-        var fb = J.buildFxBpm(127.1);
-        assert(hex(fb[0]) === "f00040050000020000000b310000000000f7", "fx bpm 0x0b " + hex(fb[0]));
-        assert(hex(fb[1]) === "f00040050000020000000c000003010a060000f7", "fx bpm 0x0c " + hex(fb[1]));
-        assert(hex(J.buildFxBpm(121.8)[1]) === "f00040050000020000000c0000020f09040000f7", "fx bpm 121.80");
+        // Byte-exact against captured rekordbox FX screen SysEx (decoded3: name
+        // LOW CUT ECHO, beat 1, BPM 121.80; decoded: 127.10).
+        var fn = J.buildFxName("LOW CUT ECHO");
+        assert(hex(fn) === "f00040050000020000000a0028002600183d3a0564502a5440141a046913" +
+            "0000000000000000000000000000000000000000000000f7", "fx name 0x0a " + hex(fn));
+        assert(hex(J.buildFxBeat("1")) === "f00040050000020000000b310000000000f7", "fx beat 0x0b");
+        assert(hex(J.buildFxBpm(127.1)) === "f00040050000020000000c000003010a060000f7", "fx bpm 127.10");
+        assert(hex(J.buildFxBpm(121.8)) === "f00040050000020000000c0000020f09040000f7", "fx bpm 121.80");
         // 211201 ms = 3:31.201 -> 03 1f c9 00.
         assert(st[15] === 0x03 && st[16] === 0x1f && st[17] === 0xc9 && st[18] === 0x00, "status length");
         // Captured rekordbox frame: elapsed 0:09.388 = 00 09 84 01.
