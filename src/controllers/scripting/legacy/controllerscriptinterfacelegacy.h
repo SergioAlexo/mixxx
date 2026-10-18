@@ -2,6 +2,7 @@
 
 #include <QJSValue>
 #include <QObject>
+#include <QSharedPointer>
 
 #include "controllers/softtakeover.h"
 #include "util/alphabetafilter.h"
@@ -11,6 +12,7 @@ class ControllerScriptEngineLegacy;
 class ControlObjectScript;
 class ScriptConnection;
 class ConfigKey;
+class VisualPlayPosition;
 
 /// ControllerScriptInterfaceLegacy is the legacy API for controller scripts to interact
 /// with Mixxx. It is inserted into the JS environment as the "engine" object.
@@ -81,6 +83,12 @@ class ControllerScriptInterfaceLegacy : public QObject {
     /// their own artwork displays (e.g. the Pioneer DDJ-1000 jog screens).
     Q_INVOKABLE QJSValue getCoverArt(
             const QString& group, int size = 80, int maxBytes = 10240);
+    /// Returns the play position (0..1) of `group` as of the latest audio
+    /// callback -- the value the waveform widgets render from. Unlike the
+    /// `playposition` control (updated 15 times a second) it follows every
+    /// audio buffer, including while scratching. Returns -1 if unavailable.
+    /// Intended for controllers that draw their own platter or playhead.
+    Q_INVOKABLE double getEnginePlayPosition(const QString& group);
     Q_INVOKABLE QJSValue makeConnection(const QString& group,
             const QString& name,
             const QJSValue& callback);
@@ -154,6 +162,7 @@ class ControllerScriptInterfaceLegacy : public QObject {
         bool oneShot;
     };
     QHash<int, TimerInfo> m_timers;
+    QHash<QString, QSharedPointer<VisualPlayPosition>> m_visualPlayPositions;
 
     QVarLengthArray<int> m_intervalAccumulator;
     QVarLengthArray<mixxx::Duration> m_lastMovement;

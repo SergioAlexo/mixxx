@@ -21,6 +21,7 @@
 #include "util/fpclassify.h"
 #include "util/make_const_iterator.h"
 #include "util/time.h"
+#include "waveform/visualplayposition.h"
 #include "waveform/waveform.h"
 
 #define SCRATCH_DEBUG_OUTPUT false
@@ -521,16 +522,22 @@ int ControllerScriptInterfaceLegacy::beginTimer(
         return 0;
     }
 
-    if (intervalMillis < 20) {
+    // 5 ms allows device displays to be streamed at the rate the vendor
+    // software uses (e.g. ~120 Hz jog-screen status on Pioneer DDJ units).
+    if (intervalMillis < 5) {
         qCWarning(m_logger) << "Timer request for" << intervalMillis
-                            << "ms is too short. Setting to the minimum of 20ms.";
-        intervalMillis = 20;
+                            << "ms is too short. Setting to the minimum of 5ms.";
+        intervalMillis = 5;
     }
 
     // This makes use of every QObject's internal timer mechanism. Nice, clean,
     // and simple. See http://doc.trolltech.com/4.6/qobject.html#startTimer for
     // details
-    int timerId = startTimer(intervalMillis);
+    // Short display-streaming intervals need precise timers: coarse timers
+    // may fire up to 5 % early or late and are coalesced by the OS, which shows
+    // up as uneven motion.
+    int timerId = startTimer(intervalMillis,
+            intervalMillis < 20 ? Qt::PreciseTimer : Qt::CoarseTimer);
     TimerInfo info;
     info.callback = timerCallback;
     info.oneShot = oneShot;
@@ -736,6 +743,25 @@ QJSValue ControllerScriptInterfaceLegacy::getWaveformSummary(
         result.setProperty(static_cast<quint32>(c), column);
     }
     return result;
+}
+
+double ControllerScriptInterfaceLegacy::getEnginePlayPosition(const QString& group) {
+    // The engine creates the VisualPlayPosition for every deck at startup, so
+    // this lookup normally only reads the shared registry; cache the pointer so
+    // it happens once per group. Reading the position itself is safe from any
+    // thread: VisualPlayPosition keeps it in a lock-free ring, which is also
+    // how the waveform renderer reads it from the VSync thread.
+    auto it = m_visualPlayPositions.constFind(group);
+    if (it == m_visualPlayPositions.constEnd()) {
+        if (!PlayerInfo::instance().getTrackInfo(group)) {
+            return -1; // no track (or no such deck): don't register a new group
+        }
+        it = m_visualPlayPositions.insert(group, VisualPlayPosition::getVisualPlayPosition(group));
+    }
+    if (!it.value()) {
+        return -1;
+    }
+    return it.value()->getEnginePlayPos();
 }
 
 QJSValue ControllerScriptInterfaceLegacy::getCoverArt(
