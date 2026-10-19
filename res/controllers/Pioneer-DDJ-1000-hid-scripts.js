@@ -46,10 +46,15 @@ PioneerDDJ1000HID.config = {
     slewGain: 0.15,         // fraction of the position error corrected per tick
     snapMs: 150,            // larger errors (seek, hot cue, scratch) jump at once
     maxLagMs: 12,           // never trail/lead the engine by more than ~1 audio buffer
-    wavePattern: "sine",    // placeholder: "sine" | "square" | "ramp" | "flat"
+    // Shown until the analysed waveform is ready: "empty" draws nothing (and
+    // clears the previous track's); "sine" | "square" | "ramp" | "flat" are test patterns.
+    wavePattern: "empty",
     renderDelayMs: 120,     // wait after a load before pushing context (let analysis settle)
-    waveRetries: 20,        // re-check for the analysed waveform this many times...
-    waveRetryMs: 500,       // ...every this many ms (covers slow analysis)
+    // Re-check for the analysed waveform every this many ms while the track
+    // stays loaded: analysis can take minutes behind a busy queue. A check is
+    // cheap (the hook returns an empty array until the overview is complete).
+    waveRetryMs: 500,
+    artTries: 20,           // cover art loads from disk: give up after this many checks
 };
 
 // HID deck N maps to Mixxx [ChannelN]. The left jog shows deck 1 or 3, the
@@ -292,7 +297,7 @@ PioneerDDJ1000HID.statusTimer = 0;
 
 PioneerDDJ1000HID.newState = function() {
     return {loaded: false, playing: false, durationMs: 0, bpm: 0, loadTimer: 0,
-        waveTries: 0, gotRealWave: false, position: null, clock: null, cueTimer: 0};
+        artTries: 0, gotRealWave: false, position: null, clock: null, cueTimer: 0};
 };
 
 PioneerDDJ1000HID.init = function() {
@@ -369,7 +374,7 @@ PioneerDDJ1000HID.onLoad = function(deck, loaded) {
     if (!st.loaded) {
         return;
     }
-    st.waveTries = 0;
+    st.artTries = 0;
     st.gotRealWave = false;
     st.gridSent = false;
     st.placeholderSent = false;
@@ -431,7 +436,9 @@ PioneerDDJ1000HID.renderContext = function(deck) {
     // Like the waveform it needs an engine hook; getCoverArt returns an empty
     // array until the track's cover is available, so a failed attempt just
     // retries on the next pass.
-    if (!st.artSent && typeof engine.getCoverArt === "function") {
+    if (!st.artSent && st.artTries < PioneerDDJ1000HID.config.artTries
+            && typeof engine.getCoverArt === "function") {
+        st.artTries++;
         const art = engine.getCoverArt(group, 80, DDJ1000Jog.ART_MAX);
         if (art && art.length > 0) {
             PioneerDDJ1000HID.sendBurst(DDJ1000Jog.artPackets(deck, art));
@@ -458,8 +465,7 @@ PioneerDDJ1000HID.renderContext = function(deck) {
             deck, DDJ1000Jog.patternPoints(PioneerDDJ1000HID.config.wavePattern), false, true));
         st.placeholderSent = true;
     }
-    if (st.waveTries < PioneerDDJ1000HID.config.waveRetries && !st.loadTimer) {
-        st.waveTries++;
+    if (!st.loadTimer) {
         st.loadTimer = engine.beginTimer(PioneerDDJ1000HID.config.waveRetryMs, () => {
             st.loadTimer = 0;
             if (st.loaded && !st.gotRealWave) {
