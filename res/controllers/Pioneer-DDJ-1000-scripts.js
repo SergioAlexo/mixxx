@@ -277,6 +277,8 @@ PioneerDDJ1000.newDeckState = function() {
         vinyl: true,
         touched: false,
         freeSpin: false,
+        // Set once a released platter has been handed back to playback.
+        handedBack: false,
         spinTicks: [],
         mode: PioneerDDJ1000.mode.hotCue,
         page: [1, 1, 1, 1, 1, 1, 1, 1],
@@ -1573,6 +1575,7 @@ PioneerDDJ1000.jogTouch = function(_channel, _control, value, _status, group) {
     state.settling = false;
     if (value) {
         state.freeSpin = false;
+        state.handedBack = false;
         state.spinTicks = [];
         if (state.vinyl && !state.loopAdjust) {
             engine.scratchEnable(deck, cfg.jogTicksPerRevolution, cfg.vinylRpm, cfg.scratchAlpha, cfg.scratchBeta);
@@ -1645,12 +1648,21 @@ PioneerDDJ1000.watchFreeSpin = function(deck, now) {
     if (state.touched || !engine.isScratching(deck) ||
             engine.isBrakeActive(deck) || engine.isSpinbackActive(deck)) {
         state.freeSpin = false;
+        state.handedBack = false;
+        return;
+    }
+    // Already handed back: Mixxx is ramping the record up to speed. Calling
+    // scratchDisable again resets its "last movement" time, which makes the
+    // ramp read the platter as stopped for a step; doing that every tick kept
+    // the speed dipping and the scratch from ever ending (audible flutter).
+    if (state.handedBack) {
         return;
     }
     const lastReport = state.spinTicks.length ? state.spinTicks[state.spinTicks.length - 1][0] : 0;
     if (!state.freeSpin || now - lastReport > 60
             || PioneerDDJ1000.spinSpeed(state, now) < PioneerDDJ1000.config.freeSpinMinSpeed) {
         state.freeSpin = false;
+        state.handedBack = true;
         state.settling = true;
         state.settledAt = now;
         // With SLIP on the track jumps back at once, so there is no speed to
