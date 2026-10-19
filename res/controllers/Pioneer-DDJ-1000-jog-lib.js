@@ -565,6 +565,9 @@ var DDJ1000Jog = (function() {
                 col = rgb565(Math.round(127 + 127 * Math.sin(2 * Math.PI * x)), 80,
                     Math.round(127 - 127 * Math.sin(2 * Math.PI * x)));
                 pts.push(wavePoint(h, h * 0.5, col, rgb565(255, 255, 255)));
+            } else if (name === "empty") {
+                // Draws nothing; replaces the previous track's waveform.
+                pts.push(wavePoint(0, 0, 0, 0));
             } else if (name === "ramp") {
                 pts.push(wavePoint(x * 40, x * 20, rgb565(0, 160, 255), rgb565(255, 255, 255)));
             } else { // flat/quiet

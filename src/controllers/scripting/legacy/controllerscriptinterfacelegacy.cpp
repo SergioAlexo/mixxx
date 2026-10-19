@@ -714,6 +714,12 @@ QJSValue ControllerScriptInterfaceLegacy::getWaveformSummary(
     if (!pWaveform || pWaveform->getDataSize() <= 0) {
         return result; // overview not analysed yet -> empty array
     }
+    // The analyser allocates the overview at full size and fills it in as it
+    // goes; like WOverview, treat it as ready only once it is complete.
+    // Otherwise a mapping that sends the overview once gets a partial one.
+    if (pWaveform->getCompletion() < pWaveform->getDataSize()) {
+        return result; // still being analysed -> empty array
+    }
 
     const int dataSize = pWaveform->getDataSize();
     result.setProperty(QStringLiteral("length"), columns);
