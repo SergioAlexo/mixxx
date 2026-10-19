@@ -14813,6 +14813,16 @@
                 </options>
             </control>
             <control>
+                <description>BEAT FX ON/OFF state report (the unit latches the button)</description>
+                <group>[EffectRack1_EffectUnit1]</group>
+                <key>PioneerDDJ1000.beatFxState</key>
+                <status>0x94</status>
+                <midino>0x46</midino>
+                <options>
+                    <script-binding/>
+                </options>
+            </control>
+            <control>
                 <description>SHIFT + BEAT FX ON/OFF: RELEASE FX</description>
                 <group>[EffectRack1_EffectUnit1]</group>
                 <key>PioneerDDJ1000.releaseFx</key>

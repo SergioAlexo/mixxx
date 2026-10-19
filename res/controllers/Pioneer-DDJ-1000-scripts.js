@@ -124,7 +124,10 @@ PioneerDDJ1000.unitNote = {
 PioneerDDJ1000.beatFxNote = {
     beatDown: 0x4A, beatUp: 0x4B,
     auto: 0x66, tap: 0x6B, // SHIFT + BEAT < / >
-    on: 0x47,
+    on: 0x47, // the MIDI spec's press note; the unit was never seen sending it
+    // The unit latches BEAT FX ON/OFF itself and reports it here (0x7F on,
+    // 0x00 off), also in the 03 01 dump; rekordbox lights the button here too.
+    state: 0x46,
     release: 0x43, // RELEASE FX is SHIFT + BEAT FX ON/OFF
 };
 
@@ -507,6 +510,11 @@ PioneerDDJ1000.init = function() {
         PioneerDDJ1000.override("[Master]", "headMix", -1);
     }
 
+    // Mixxx starts effect unit 1 switched on and routed to deck 1, so the
+    // last-used chain plays at launch with BEAT FX ON dark. Start it off, as
+    // the unit's ON/OFF state does.
+    PioneerDDJ1000.override(PioneerDDJ1000.beatFxUnit, "enabled", 0);
+
     PioneerDDJ1000.connectGlobal();
     PioneerDDJ1000.applyColorFx();
     PioneerDDJ1000.timer = engine.beginTimer(PioneerDDJ1000.config.displayIntervalMs, PioneerDDJ1000.tick);
@@ -766,7 +774,7 @@ PioneerDDJ1000.refreshAll = function() {
         PioneerDDJ1000.deckLed(deck, PioneerDDJ1000.deckNote.keySync, state.keySync);
         PioneerDDJ1000.updateClock(deck);
     });
-    PioneerDDJ1000.led(PioneerDDJ1000.midiStatus.beatFx, PioneerDDJ1000.beatFxNote.on, PioneerDDJ1000.beatFx.on);
+    PioneerDDJ1000.led(PioneerDDJ1000.midiStatus.beatFx, PioneerDDJ1000.beatFxNote.state, PioneerDDJ1000.beatFx.on);
     PioneerDDJ1000.updateColorFxLeds();
     PioneerDDJ1000.queueAllPads();
 };
@@ -891,7 +899,7 @@ PioneerDDJ1000.connectGlobal = function() {
         PioneerDDJ1000.decks.forEach((deck) => PioneerDDJ1000.deckLed(deck, PioneerDDJ1000.deckNote.monoSplit, value > 0));
     });
     PioneerDDJ1000.connect(PioneerDDJ1000.beatFxUnit, "enabled", () => {
-        PioneerDDJ1000.led(PioneerDDJ1000.midiStatus.beatFx, PioneerDDJ1000.beatFxNote.on, PioneerDDJ1000.beatFx.on);
+        PioneerDDJ1000.led(PioneerDDJ1000.midiStatus.beatFx, PioneerDDJ1000.beatFxNote.state, PioneerDDJ1000.beatFx.on);
     });
     // Samplers can be added later (by the skin); connect those too.
     PioneerDDJ1000.listen("[App]", "num_samplers", PioneerDDJ1000.connectSamplers);
@@ -1968,6 +1976,13 @@ PioneerDDJ1000.beatFxOn = function(_channel, _control, value) {
     }
 };
 
+// What the DDJ-1000 actually sends for BEAT FX ON/OFF: its latched state.
+PioneerDDJ1000.beatFxState = function(_channel, _control, value) {
+    if ((value > 0) !== PioneerDDJ1000.beatFx.on) {
+        PioneerDDJ1000.setBeatFx(value > 0);
+    }
+};
+
 // Until the knobs are first moved, effect unit 1 keeps Mixxx's effects, routing
 // and mix. Where those would leave BEAT FX ON silent (Mixxx starts every unit
 // with no effects, routed nowhere, mix fully dry), load the first chain
@@ -1991,11 +2006,23 @@ PioneerDDJ1000.prepareBeatFx = function() {
     }
 };
 
+// Mixxx starts every effect in a standard unit switched off (each has its own
+// button in the GUI) and chain presets do not store that switch, so a loaded
+// Beat FX chain stays silent. BEAT FX ON/OFF is the only switch here: keep the
+// unit's effects on.
+PioneerDDJ1000.enableBeatFxSlots = function() {
+    const unit = PioneerDDJ1000.beatFxUnit;
+    PioneerDDJ1000.numberedGroups(engine.getValue(unit, "num_effectslots"),
+        (i) => `[EffectRack1_EffectUnit1_Effect${i}]`)
+        .forEach((slot) => PioneerDDJ1000.override(slot, "enabled", 1));
+};
+
 PioneerDDJ1000.setBeatFx = function(on) {
     const fx = PioneerDDJ1000.beatFx;
     const roll = PioneerDDJ1000.rollType();
     if (on) {
         PioneerDDJ1000.prepareBeatFx();
+        PioneerDDJ1000.enableBeatFxSlots();
     }
     fx.rolling.forEach((deck) => PioneerDDJ1000.stopRoll(deck, fx.rollSlip));
     fx.rolling = [];
@@ -2006,7 +2033,7 @@ PioneerDDJ1000.setBeatFx = function(on) {
     }
     fx.on = on;
     engine.setValue(PioneerDDJ1000.beatFxUnit, "enabled", on && !roll ? 1 : 0);
-    PioneerDDJ1000.beatFxLed(PioneerDDJ1000.beatFxNote.on, on);
+    PioneerDDJ1000.beatFxLed(PioneerDDJ1000.beatFxNote.state, on);
 };
 
 PioneerDDJ1000.startRoll = function(deck, beats, slip) {
