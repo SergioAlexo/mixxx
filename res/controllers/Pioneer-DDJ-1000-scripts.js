@@ -163,14 +163,6 @@ PioneerDDJ1000.color = {
     purple: 61, white: 127,
 };
 
-// Hue of palette steps 1-61 (the steps between are in between), used to
-// light hot cues in their Mixxx colour. rekordbox's green hot cue is 22.
-PioneerDDJ1000.paletteHues = [
-    [1, 240], [5, 228], [9, 216], [13, 200], [17, 180], [21, 120], [25, 85],
-    [29, 60], [33, 45], [37, 30], [41, 0], [45, 350], [49, 340], [53, 330],
-    [57, 300], [61, 275],
-];
-
 PioneerDDJ1000.mode = {
     hotCue: 0, padFx1: 1, beatJump: 2, sampler: 3,
     keyboard: 4, padFx2: 5, beatLoop: 6, keyShift: 7,
@@ -533,62 +525,6 @@ PioneerDDJ1000.routingGroups = () =>
             (i) => `[Auxiliary${i}]`))
         .concat(PioneerDDJ1000.numberedGroups(engine.getValue("[App]", "num_preview_decks"),
             (i) => `[PreviewDeck${i}]`));
-
-// Every palette step 1-61 with its hue, interpolated between paletteHues.
-// The hues fall from 240 (blue) through 0 (red) to 275 (purple), so they are
-// unwrapped below 0 for the interpolation.
-PioneerDDJ1000.paletteSteps = (function() {
-    let last = Infinity;
-    const anchors = PioneerDDJ1000.paletteHues.map(([value, hue]) => {
-        while (hue > last) {
-            hue -= 360;
-        }
-        last = hue;
-        return [value, hue];
-    });
-    const steps = [];
-    for (let i = 1; i < anchors.length; i++) {
-        const [v0, h0] = anchors[i - 1];
-        const [v1, h1] = anchors[i];
-        for (let v = v0; v < v1 || (i === anchors.length - 1 && v === v1); v++) {
-            steps.push([v, ((h0 + (h1 - h0) * (v - v0) / (v1 - v0)) % 360 + 360) % 360]);
-        }
-    }
-    return steps;
-})();
-
-// The bright palette step nearest in hue to an RGB colour; greys and pale
-// colours light white.
-PioneerDDJ1000.padColorFor = function(rgb) {
-    const r = ((rgb >> 16) & 0xFF) / 255;
-    const g = ((rgb >> 8) & 0xFF) / 255;
-    const b = (rgb & 0xFF) / 255;
-    const max = Math.max(r, g, b);
-    const range = max - Math.min(r, g, b);
-    if (max === 0 || range / max < 0.25) {
-        return PioneerDDJ1000.color.white;
-    }
-    let hue;
-    if (max === r) {
-        hue = ((g - b) / range) % 6;
-    } else if (max === g) {
-        hue = (b - r) / range + 2;
-    } else {
-        hue = (r - g) / range + 4;
-    }
-    hue = (hue * 60 + 360) % 360;
-    let best = PioneerDDJ1000.color.white;
-    let bestDistance = Infinity;
-    PioneerDDJ1000.paletteSteps.forEach(([value, stepHue]) => {
-        const d = Math.abs(stepHue - hue);
-        const distance = Math.min(d, 360 - d);
-        if (distance < bestDistance) {
-            best = value;
-            bestDistance = distance;
-        }
-    });
-    return best;
-};
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -2378,11 +2314,33 @@ PioneerDDJ1000.padHotCue = function(deck, number, value, shifted) {
         }
         return;
     }
+    const state = PioneerDDJ1000.deck[deck];
+    state.loopCuePressed = state.loopCuePressed || {};
+    // A saved loop on a playing deck always restarts from its start and
+    // loops, as in rekordbox, instead of Mixxx's on/off toggle.
+    if (value && engine.getValue(group, "play")
+            && engine.getValue(group, `hotcue_${number}_status`) > 0
+            && engine.getValue(group, `hotcue_${number}_type`) === 4) {
+        engine.setValue(group, `hotcue_${number}_gotoandloop`, 1);
+        state.loopCuePressed[number] = true;
+        state.keyboardCue = number;
+        return;
+    }
+    if (!value && state.loopCuePressed[number]) {
+        delete state.loopCuePressed[number];
+        return;
+    }
     // Sets the cue (or saves the running loop) when empty, otherwise jumps;
-    // held while paused it previews.
+    // held while paused it previews. A new hot cue gets its own colour,
+    // never orange (kept for loops).
+    const empty = value && !engine.getValue(group, `hotcue_${number}_status`);
     engine.setValue(group, `hotcue_${number}_activate`, value ? 1 : 0);
+    if (empty && engine.getValue(group, `hotcue_${number}_status`)
+            && engine.getValue(group, `hotcue_${number}_type`) !== 4) {
+        engine.setValue(group, `hotcue_${number}_color`, DDJ1000Jog.newHotCueRgb(number));
+    }
     if (value) {
-        PioneerDDJ1000.deck[deck].keyboardCue = number;
+        state.keyboardCue = number;
     }
 };
 
@@ -2728,13 +2686,14 @@ PioneerDDJ1000.hotCueColor = function(deck, number) {
         return PioneerDDJ1000.color.off;
     }
     // A saved loop lights orange, as in rekordbox, and blinks while it runs;
-    // a hot cue lights in its Mixxx colour. Both bright, as rekordbox's
-    // hot cues (22 for its green).
-    if (engine.getValue(group, `hotcue_${number}_type`) === 4) {
-        const orange = PioneerDDJ1000.color.orange;
-        return status === 2 ? PioneerDDJ1000.blinkColor(orange, PioneerDDJ1000.color.off) : orange;
+    // a hot cue lights in its Mixxx colour (DDJ1000Jog.hotCueColor, shared
+    // with the jog screen). Both bright, as rekordbox's hot cues.
+    const type = engine.getValue(group, `hotcue_${number}_type`);
+    const colour = DDJ1000Jog.hotCueColor(type, engine.getValue(group, `hotcue_${number}_color`));
+    if (type === 4 && status === 2) {
+        return PioneerDDJ1000.blinkColor(colour, PioneerDDJ1000.color.off);
     }
-    return PioneerDDJ1000.padColorFor(engine.getValue(group, `hotcue_${number}_color`));
+    return colour;
 };
 
 // Idle pads dim, held pads bright, as rekordbox does.

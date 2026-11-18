@@ -488,7 +488,119 @@ var DDJ1000Jog = (function() {
             r[23] = p & 0xff;
             r[24] = (p >> 8) & 0xff;
         }
+        // byte4 bits 4-6 = TEMPO RANGE index + 1 (firmware STAGE2_LCD.md):
+        // 1 = +-6 %, 2 = +-10 %, 3 = +-16 %, 4 = WIDE. rekordbox sends 0x11
+        // at +-6 and 0x21 at +-10.
+        if (typeof opts.rangeIndex === "number") {
+            r[4] = (r[4] & 0x8f) | (((clamp(opts.rangeIndex, 0, 3) + 1) & 0x07) << 4);
+        }
         return r;
+    }
+
+    // TEMPO RANGE index (0 = +-6, 1 = +-10, 2 = +-16, 3 = WIDE) for a Mixxx
+    // rateRange (0.06 = +-6 %): the smallest range that covers it.
+    function tempoRangeIndex(rateRange) {
+        var ranges = [0.06, 0.10, 0.16];
+        for (var i = 0; i < ranges.length; i++) {
+            if (rateRange <= ranges[i] + 0.001) {
+                return i;
+            }
+        }
+        return 3;
+    }
+
+    // -----------------------------------------------------------------------
+    // Colours. Pads and the jog screen share one palette: 1-63 bright
+    // colours along a hue wheel (64-127 the same colours dim), 127 white.
+    // PALETTE_HUES are the hues of steps 1-61, the steps between are in
+    // between; rekordbox's green hot cue is 22.
+    // -----------------------------------------------------------------------
+    var COLOR_WHITE = 127;
+    var COLOR_ORANGE = 37;
+    var PALETTE_HUES = [
+        [1, 240], [5, 228], [9, 216], [13, 200], [17, 180], [21, 120], [25, 85],
+        [29, 60], [33, 45], [37, 30], [41, 0], [45, 350], [49, 340], [53, 330],
+        [57, 300], [61, 275],
+    ];
+    // Every step 1-61 with its hue. The hues fall from 240 (blue) through 0
+    // (red) to 275 (purple), so they are unwrapped below 0 to interpolate.
+    var PALETTE_STEPS = (function() {
+        var last = Infinity;
+        var anchors = PALETTE_HUES.map(function(a) {
+            var hue = a[1];
+            while (hue > last) {
+                hue -= 360;
+            }
+            last = hue;
+            return [a[0], hue];
+        });
+        var steps = [];
+        for (var i = 1; i < anchors.length; i++) {
+            var v0 = anchors[i - 1][0], h0 = anchors[i - 1][1];
+            var v1 = anchors[i][0], h1 = anchors[i][1];
+            for (var v = v0; v < v1 || (i === anchors.length - 1 && v === v1); v++) {
+                steps.push([v, ((h0 + (h1 - h0) * (v - v0) / (v1 - v0)) % 360 + 360) % 360]);
+            }
+        }
+        return steps;
+    })();
+
+    // The bright palette step nearest in hue to an RGB colour; greys and pale
+    // colours give white.
+    function padColorFor(rgb) {
+        var r = ((rgb >> 16) & 0xff) / 255;
+        var g = ((rgb >> 8) & 0xff) / 255;
+        var b = (rgb & 0xff) / 255;
+        var max = Math.max(r, g, b);
+        var range = max - Math.min(r, g, b);
+        if (max === 0 || range / max < 0.25) {
+            return COLOR_WHITE;
+        }
+        var hue;
+        if (max === r) {
+            hue = ((g - b) / range) % 6;
+        } else if (max === g) {
+            hue = (b - r) / range + 2;
+        } else {
+            hue = (r - g) / range + 4;
+        }
+        hue = (hue * 60 + 360) % 360;
+        var best = COLOR_WHITE;
+        var bestDistance = Infinity;
+        PALETTE_STEPS.forEach(function(step) {
+            var d = Math.abs(step[1] - hue);
+            var distance = Math.min(d, 360 - d);
+            if (distance < bestDistance) {
+                best = step[0];
+                bestDistance = distance;
+            }
+        });
+        return best;
+    }
+
+    // The colour a hot cue lights in, on pads and the jog screen: a saved
+    // loop (Mixxx type 4) orange, as in rekordbox; anything else its Mixxx
+    // colour, except that orange is kept for loops: a hot cue whose colour
+    // falls on the orange steps (34-39) lights amber or red instead.
+    function hotCueColor(type, rgb) {
+        if (type === 4) {
+            return COLOR_ORANGE;
+        }
+        var colour = padColorFor(rgb);
+        if (colour >= 34 && colour <= 39) {
+            return colour <= 36 ? 33 : 41;
+        }
+        return colour;
+    }
+
+    // Colours given to new hot cues set from the pads, by hot cue number
+    // (1 = first): rekordbox's hot cue colours minus orange.
+    var NEW_HOTCUE_COLORS = [
+        0x28E214, 0x305AFF, 0xE62828, 0xC3AF04, 0xAA42FF, 0x00E0FF, 0xFF127B, 0x10B176,
+    ];
+
+    function newHotCueRgb(number) {
+        return NEW_HOTCUE_COLORS[(number - 1) % NEW_HOTCUE_COLORS.length];
     }
 
     // Split a transfer body over 64-byte reports: hdr(6) + 58 payload bytes each.
@@ -683,6 +795,9 @@ var DDJ1000Jog = (function() {
         artPackets: artPackets, beatgridPackets: beatgridPackets, makeBeats: makeBeats,
         statusPacket: statusPacket, retarget: retarget, patternPoints: patternPoints,
         timeBytes: timeBytes, hotCuePackets: hotCuePackets, cueInfoPackets: cueInfoPackets,
+        tempoRangeIndex: tempoRangeIndex,
+        padColorFor: padColorFor, hotCueColor: hotCueColor, PALETTE_STEPS: PALETTE_STEPS,
+        newHotCueRgb: newHotCueRgb,
         wavePointsFromSummary: wavePointsFromSummary,
     };
 })();

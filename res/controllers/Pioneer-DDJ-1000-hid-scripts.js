@@ -142,6 +142,7 @@ PioneerDDJ1000HID.tick = function() {
             cueMs: cue >= 0 ? PioneerDDJ1000HID.samplesToMs(group, cue) : -1,
             bpm: bpm,
             ratePct: (ratio - 1) * 100,
+            rangeIndex: DDJ1000Jog.tempoRangeIndex(engine.getValue(group, "rateRange")),
         }));
     });
     const n = Math.min(cfg.burstChunk, pending.length);
@@ -242,15 +243,21 @@ PioneerDDJ1000HID.samplesToMs = function(group, samples) {
     return samples * 1000 / ((engine.getValue(group, "track_samplerate") || 44100) * 2);
 };
 
-// Hot cues 1..16 as the unit's 0x30 list (all shown in rekordbox's default
-// colour; the unit's colour numbering is the pad palette, not RGB).
+// Hot cues 1..16 as the unit's 0x30 list, each in the colour its pad lights
+// (saved loops orange, others their Mixxx colour; the unit's colour
+// numbering is the pad palette, not RGB).
 PioneerDDJ1000HID.hotCuePackets = function(deck) {
     const group = PioneerDDJ1000HID.group(deck);
     const cues = [];
     for (let n = 1; n <= 16; n++) {
         const pos = engine.getValue(group, `hotcue_${n}_position`);
         if (engine.getValue(group, `hotcue_${n}_status`) > 0 && pos >= 0) {
-            cues.push({slot: n - 1, ms: PioneerDDJ1000HID.samplesToMs(group, pos)});
+            cues.push({
+                slot: n - 1,
+                ms: PioneerDDJ1000HID.samplesToMs(group, pos),
+                color: DDJ1000Jog.hotCueColor(engine.getValue(group, `hotcue_${n}_type`),
+                    engine.getValue(group, `hotcue_${n}_color`)),
+            });
         }
     }
     return DDJ1000Jog.hotCuePackets(deck, PioneerDDJ1000HID.state[deck].durationMs, cues);
@@ -318,7 +325,7 @@ PioneerDDJ1000HID.init = function() {
         // Re-send the hot-cue list when one changes, as rekordbox does. Batched
         // through a short one-shot so clearing/setting several is one transfer.
         for (let n = 1; n <= 16; n++) {
-            ["status", "position"].forEach((key) => {
+            ["status", "position", "type", "color"].forEach((key) => {
                 PioneerDDJ1000HID.connect(group, `hotcue_${n}_${key}`, () => PioneerDDJ1000HID.cuesChanged(deck));
             });
         }
