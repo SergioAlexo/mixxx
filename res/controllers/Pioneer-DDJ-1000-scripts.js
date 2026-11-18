@@ -200,7 +200,22 @@ PioneerDDJ1000.semitones = [
     [-4, -3, -2, -1, -8, -7, -6, -5],
 ];
 
+// The PAD FX chain presets that tools/install_effects.py (ddj1000-mixxx repo)
+// installs right after the 12 BEAT FX ones, in this order.
+PioneerDDJ1000.padFxPresets = [
+    "Sweep", "Flanger", "Echo 1/4", "Echo 1/2", "Echo 1", "Reverb",
+    "Trans", "Crush", "Filter LFO", "MT Delay", "Dub Echo", "Space",
+];
+PioneerDDJ1000.padFxPresetFirst = 13;
+// PAD FX presets play on this effect unit, which the mapping uses for
+// nothing else.
+PioneerDDJ1000.padFxUnit = 2;
+// How long a release FX echo keeps ringing after its pad is let go.
+PioneerDDJ1000.releaseEchoBeats = 8;
+
 // What each PAD FX pad does, per mode and page:
+//   {preset}      hold that PAD FX chain preset on this deck; with
+//                 release, the echo rings out after the pad is let go
 //   {unit, slot}  hold one effect of an effect unit on this deck
 //   {unit}        hold the whole effect unit on this deck
 //   {roll}        loop roll of that many beats (slip)
@@ -214,16 +229,27 @@ PioneerDDJ1000.padFx = (function() {
         {unit: unit, slot: 3, color: colour},
         {unit: unit, color: c.purple},
     ];
-    const rolls = (beats) => beats.map((b) => ({roll: b, color: c.green}));
     const tricks = [
         {brake: true, color: c.amber},
         {spinback: true, color: c.amber},
         {reverse: true, color: c.orange},
     ];
     return {
+        // rekordbox's PAD FX 1, with its colours (REKORDBOX_LEDS.md). The
+        // pads marked R in rekordbox are its release FX.
         [PioneerDDJ1000.mode.padFx1]: [
-            unitRow(3, c.blue).concat(rolls([1 / 16, 1 / 8, 1 / 4, 1 / 2])),
-            unitRow(4, c.azure).concat(rolls([1 / 32, 1, 2, 4])),
+            [
+                {roll: 1 / 2, color: 73}, {preset: "Sweep", color: 78},
+                {preset: "Flanger", color: 78}, {brake: true, color: 65},
+                {preset: "Echo 1/4", color: 69}, {preset: "Echo 1/2", color: 69},
+                {preset: "Reverb", color: 86}, {preset: "Echo 1/2", release: true, color: 65},
+            ],
+            [
+                {preset: "Trans", color: 73}, {preset: "Crush", color: 120},
+                {preset: "Filter LFO", color: 78}, {spinback: true, color: 65},
+                {preset: "MT Delay", color: 69}, {preset: "Dub Echo", color: 69},
+                {preset: "Space", color: 86}, {preset: "Echo 1", release: true, color: 65},
+            ],
         ],
         [PioneerDDJ1000.mode.padFx2]: [
             tricks.concat([{roll: 3 / 4, color: c.lime}], unitRow(4, c.azure)),
@@ -2309,6 +2335,8 @@ PioneerDDJ1000.padEffect = function(deck, entry, value) {
     } else if (entry.reverse) {
         // Mixxx's slip reverse returns to where the track would have been.
         engine.setValue(PioneerDDJ1000.group(deck), "reverseroll", value ? 1 : 0);
+    } else if (entry.preset) {
+        PioneerDDJ1000.padPreset(deck, entry, value);
     } else if (value) {
         PioneerDDJ1000.holdUnit(deck, entry.unit, entry.slot);
     } else {
@@ -2416,10 +2444,63 @@ PioneerDDJ1000.releaseUnit = function(unitNumber) {
         return;
     }
     const unit = `[EffectRack1_EffectUnit${unitNumber}]`;
+    if (saved.mix !== undefined) {
+        engine.setValue(unit, "mix", saved.mix);
+    }
     engine.setValue(unit, "enabled", saved.enabled);
     Object.keys(saved.routing).forEach((key) => engine.setValue(unit, key, saved.routing[key]));
     Object.keys(saved.slots).forEach((slotGroup) => engine.setValue(slotGroup, "enabled", saved.slots[slotGroup]));
     delete PioneerDDJ1000.heldUnits[unitNumber];
+};
+
+// A PAD FX chain preset on the PAD FX unit, this deck only, fully wet, while
+// the pad is held. A release FX echo stops taking in sound when the pad is
+// let go and rings out for releaseEchoBeats before the unit is put back.
+PioneerDDJ1000.padPreset = function(deck, entry, value) {
+    const number = PioneerDDJ1000.padFxUnit;
+    const unit = `[EffectRack1_EffectUnit${number}]`;
+    const echo = `[EffectRack1_EffectUnit${number}_Effect1]`;
+    const send = "parameter4"; // the echo's SEND knob
+    if (value) {
+        PioneerDDJ1000.endReleaseTail();
+        const preset = PioneerDDJ1000.padFxPresetFirst + PioneerDDJ1000.padFxPresets.indexOf(entry.preset);
+        if (preset < engine.getValue(unit, "num_chain_presets")
+                && engine.getValue(unit, "loaded_chain_preset") !== preset) {
+            engine.setValue(unit, "loaded_chain_preset", preset);
+        }
+        if (entry.release) {
+            engine.setValue(echo, send, 1);
+        }
+        const mix = engine.getValue(unit, "mix");
+        PioneerDDJ1000.holdUnit(deck, number);
+        PioneerDDJ1000.heldUnits[number].mix = mix;
+        engine.setValue(unit, "mix", 1);
+        return;
+    }
+    if (!entry.release) {
+        PioneerDDJ1000.releaseUnit(number);
+        return;
+    }
+    engine.setValue(echo, send, 0);
+    const bpm = engine.getValue(PioneerDDJ1000.group(deck), "bpm") || 120;
+    const ms = Math.max(1000, PioneerDDJ1000.releaseEchoBeats * 60000 / bpm);
+    PioneerDDJ1000.releaseTail = engine.beginTimer(ms, () => {
+        PioneerDDJ1000.releaseTail = 0;
+        PioneerDDJ1000.releaseUnit(number);
+        engine.setValue(echo, send, 1);
+    }, true);
+};
+
+PioneerDDJ1000.releaseTail = 0;
+
+// Cut a ringing release echo short: another PAD FX preset needs the unit.
+PioneerDDJ1000.endReleaseTail = function() {
+    if (PioneerDDJ1000.releaseTail) {
+        engine.stopTimer(PioneerDDJ1000.releaseTail);
+        PioneerDDJ1000.releaseTail = 0;
+        PioneerDDJ1000.releaseUnit(PioneerDDJ1000.padFxUnit);
+        engine.setValue(`[EffectRack1_EffectUnit${PioneerDDJ1000.padFxUnit}_Effect1]`, "parameter4", 1);
+    }
 };
 
 PioneerDDJ1000.padBeatJump = function(deck, pad, value) {
@@ -2584,10 +2665,14 @@ PioneerDDJ1000.hotCueColor = function(deck, number) {
     return colour;
 };
 
+// A held pad lights brighter: rekordbox's colours (64 and up) drop 64, as
+// rekordbox does; the mapping's own colours go white.
 PioneerDDJ1000.padFxColor = function(deck, mode, page, pad) {
-    return PioneerDDJ1000.isPressed(deck, mode, pad)
-        ? PioneerDDJ1000.color.white
-        : PioneerDDJ1000.padFx[mode][page - 1][pad].color;
+    const colour = PioneerDDJ1000.padFx[mode][page - 1][pad].color;
+    if (!PioneerDDJ1000.isPressed(deck, mode, pad)) {
+        return colour;
+    }
+    return colour >= 64 ? colour - 64 : PioneerDDJ1000.color.white;
 };
 
 // rekordbox's colours (REKORDBOX_LEDS.md): red and orange in a checkerboard,
