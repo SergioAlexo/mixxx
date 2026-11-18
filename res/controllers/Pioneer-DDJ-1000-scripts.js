@@ -235,20 +235,21 @@ PioneerDDJ1000.padFx = (function() {
         {reverse: true, color: c.orange},
     ];
     return {
-        // rekordbox's PAD FX 1, with its colours (REKORDBOX_LEDS.md). The
-        // pads marked R in rekordbox are its release FX.
+        // rekordbox's PAD FX 1. Its colours are rekordbox's (REKORDBOX_LEDS.md)
+        // less 64: the same hues from the 1-63 half of the palette. The pads
+        // marked R in rekordbox are its release FX.
         [PioneerDDJ1000.mode.padFx1]: [
             [
-                {roll: 1 / 2, color: 73}, {preset: "Sweep", color: 78},
-                {preset: "Flanger", color: 78}, {brake: true, color: 65},
-                {preset: "Echo 1/4", color: 69}, {preset: "Echo 1/2", color: 69},
-                {preset: "Reverb", color: 86}, {preset: "Echo 1/2", release: true, color: 65},
+                {roll: 1 / 2, color: 9}, {preset: "Sweep", color: 14},
+                {preset: "Flanger", color: 14}, {brake: true, color: 1},
+                {preset: "Echo 1/4", color: 5}, {preset: "Echo 1/2", color: 5},
+                {preset: "Reverb", color: 22}, {preset: "Echo 1/2", release: true, color: 1},
             ],
             [
-                {preset: "Trans", color: 73}, {preset: "Crush", color: 120},
-                {preset: "Filter LFO", color: 78}, {spinback: true, color: 65},
-                {preset: "MT Delay", color: 69}, {preset: "Dub Echo", color: 69},
-                {preset: "Space", color: 86}, {preset: "Echo 1", release: true, color: 65},
+                {preset: "Trans", color: 9}, {preset: "Crush", color: 56},
+                {preset: "Filter LFO", color: 14}, {spinback: true, color: 1},
+                {preset: "MT Delay", color: 5}, {preset: "Dub Echo", color: 5},
+                {preset: "Space", color: 22}, {preset: "Echo 1", release: true, color: 1},
             ],
         ],
         [PioneerDDJ1000.mode.padFx2]: [
@@ -2665,24 +2666,25 @@ PioneerDDJ1000.hotCueColor = function(deck, number) {
     return colour;
 };
 
-// A held pad lights brighter: rekordbox's colours (64 and up) drop 64, as
-// rekordbox does; the mapping's own colours go white.
 PioneerDDJ1000.padFxColor = function(deck, mode, page, pad) {
-    const colour = PioneerDDJ1000.padFx[mode][page - 1][pad].color;
-    if (!PioneerDDJ1000.isPressed(deck, mode, pad)) {
-        return colour;
-    }
-    return colour >= 64 ? colour - 64 : PioneerDDJ1000.color.white;
+    return PioneerDDJ1000.isPressed(deck, mode, pad)
+        ? PioneerDDJ1000.color.white
+        : PioneerDDJ1000.padFx[mode][page - 1][pad].color;
 };
 
-// rekordbox's colours (REKORDBOX_LEDS.md): red and orange in a checkerboard,
-// one colour per size, the same on every page; a held pad takes the
-// matching low-palette colour.
-PioneerDDJ1000.beatJumpPadColors = {idle: [106, 101, 101, 106], pressed: [42, 38, 38, 42]};
+// Red and orange in a checkerboard, one colour per size, the same on every
+// page, as in rekordbox; a held pad lights white. rekordbox sends 106/101,
+// the same hues from the 64-127 half of the palette (REKORDBOX_LEDS.md); the
+// mapping uses the 1-63 half, which shows those hues on the unit.
+PioneerDDJ1000.beatJumpPadColors = (function() {
+    const c = PioneerDDJ1000.color;
+    return [c.red, c.orange, c.orange, c.red];
+})();
 
 PioneerDDJ1000.beatJumpColor = function(deck, pad) {
-    const pressed = PioneerDDJ1000.isPressed(deck, PioneerDDJ1000.mode.beatJump, pad);
-    return PioneerDDJ1000.beatJumpPadColors[pressed ? "pressed" : "idle"][pad >> 1];
+    return PioneerDDJ1000.isPressed(deck, PioneerDDJ1000.mode.beatJump, pad)
+        ? PioneerDDJ1000.color.white
+        : PioneerDDJ1000.beatJumpPadColors[pad >> 1];
 };
 
 PioneerDDJ1000.samplerColor = function(deck, pad) {
@@ -2711,11 +2713,10 @@ PioneerDDJ1000.semitoneColor = function(deck, mode, page, pad) {
     return mode === PioneerDDJ1000.mode.keyboard ? c.purple : c.pink;
 };
 
-// rekordbox's colours (REKORDBOX_LEDS.md): page 1 yellowish (100), page 2
-// more orange (102). The running loop's pad, and a held pad, go brighter:
-// 37 is what rekordbox sends for a held page 1 pad; 39 for page 2 follows
-// the same pattern but was not captured.
-PioneerDDJ1000.beatLoopPadColors = {idle: [100, 102], bright: [37, 39]};
+// Page 1 yellowish, page 2 more orange, as in rekordbox (which sends
+// 100/102, the same hues from the 64-127 half of the palette). The running
+// loop's pad, and a held pad, light white.
+PioneerDDJ1000.beatLoopPadColors = [PioneerDDJ1000.color.amber, PioneerDDJ1000.color.orange];
 
 PioneerDDJ1000.beatLoopColor = function(deck, page, pad) {
     const group = PioneerDDJ1000.group(deck);
@@ -2723,7 +2724,7 @@ PioneerDDJ1000.beatLoopColor = function(deck, page, pad) {
     const active = engine.getValue(group, "loop_enabled")
         && Math.abs(engine.getValue(group, "beatloop_size") - beats) < 1e-6;
     const bright = active || PioneerDDJ1000.isPressed(deck, PioneerDDJ1000.mode.beatLoop, pad);
-    return PioneerDDJ1000.beatLoopPadColors[bright ? "bright" : "idle"][page - 1];
+    return bright ? PioneerDDJ1000.color.white : PioneerDDJ1000.beatLoopPadColors[page - 1];
 };
 
 PioneerDDJ1000.padColors = {
