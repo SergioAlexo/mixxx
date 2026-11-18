@@ -214,26 +214,22 @@ PioneerDDJ1000.padFxUnit = 2;
 PioneerDDJ1000.releaseEchoBeats = 8;
 
 // What each PAD FX pad does, per mode and page:
-//   {preset}      hold that PAD FX chain preset on this deck; with
+//   {preset}      hold that PAD FX chain preset on this deck; params sets
+//                 knobs of its first effect (parameterN: value); with
 //                 release, the echo rings out after the pad is let go
 //   {unit, slot}  hold one effect of an effect unit on this deck
 //   {unit}        hold the whole effect unit on this deck
-//   {roll}        loop roll of that many beats (slip)
+//   {roll}        loop roll of that many beats (slip); with reverse, played
+//                 backwards (rekordbox's REV ROLL)
 //   {brake}, {spinback}, {reverse}  deck tricks
 // All of them act only while the pad is held; see padEffect().
 PioneerDDJ1000.padFx = (function() {
-    const c = PioneerDDJ1000.color;
-    const unitRow = (unit, colour) => [
-        {unit: unit, slot: 1, color: colour},
-        {unit: unit, slot: 2, color: colour},
-        {unit: unit, slot: 3, color: colour},
-        {unit: unit, color: c.purple},
-    ];
-    const tricks = [
-        {brake: true, color: c.amber},
-        {spinback: true, color: c.amber},
-        {reverse: true, color: c.orange},
-    ];
+    const sizes = [1 / 16, 1 / 8, 1 / 4, 1 / 2];
+    // The tremolo's RATE (parameter2) is cycles per beat, at most 8, so
+    // TRANS 1/16 plays as 1/8. The echo's TIME (parameter1) is in beats.
+    const trans = (beats) => ({preset: "Trans", params: {parameter2: Math.min(8, 1 / beats)}});
+    const mtDelay = (beats) => ({preset: "MT Delay", params: {parameter1: beats}});
+    const withColor = (colour) => (entry) => Object.assign(entry, {color: colour});
     return {
         // rekordbox's PAD FX 1. Its colours are rekordbox's (REKORDBOX_LEDS.md)
         // less 64: the same hues from the 1-63 half of the palette. The pads
@@ -246,15 +242,19 @@ PioneerDDJ1000.padFx = (function() {
                 {preset: "Reverb", color: 22}, {preset: "Echo 1/2", release: true, color: 1},
             ],
             [
-                {preset: "Trans", color: 9}, {preset: "Crush", color: 56},
+                withColor(9)(trans(1 / 2)), {preset: "Crush", color: 56},
                 {preset: "Filter LFO", color: 14}, {spinback: true, color: 1},
-                {preset: "MT Delay", color: 5}, {preset: "Dub Echo", color: 5},
+                withColor(5)(mtDelay(1 / 8)), {preset: "Dub Echo", color: 5},
                 {preset: "Space", color: 22}, {preset: "Echo 1", release: true, color: 1},
             ],
         ],
+        // rekordbox's PAD FX 2: SLIP LOOP over REV ROLL, then TRANS over
+        // MT DELAY, each 1/16 1/8 1/4 1/2 beat.
         [PioneerDDJ1000.mode.padFx2]: [
-            tricks.concat([{roll: 3 / 4, color: c.lime}], unitRow(4, c.azure)),
-            tricks.concat([{roll: 3 / 2, color: c.lime}], unitRow(3, c.blue)),
+            sizes.map((b) => ({roll: b, color: 9}))
+                .concat(sizes.map((b) => ({roll: b, reverse: true, color: 9}))),
+            sizes.map((b) => withColor(9)(trans(b)))
+                .concat(sizes.map((b) => withColor(5)(mtDelay(b)))),
         ],
     };
 })();
@@ -2330,7 +2330,14 @@ PioneerDDJ1000.padHotCue = function(deck, number, value, shifted) {
 // leaves the deck or effect unit as it found it when the pad is released.
 PioneerDDJ1000.padEffect = function(deck, entry, value) {
     if (entry.roll !== undefined) {
+        const group = PioneerDDJ1000.group(deck);
+        if (entry.reverse && !value) {
+            engine.setValue(group, "reverse", 0);
+        }
         PioneerDDJ1000.padRoll(deck, entry.roll, value);
+        if (entry.reverse && value) {
+            engine.setValue(group, "reverse", 1);
+        }
     } else if (entry.brake || entry.spinback) {
         PioneerDDJ1000.padTrick(deck, entry.spinback, value);
     } else if (entry.reverse) {
@@ -2472,6 +2479,7 @@ PioneerDDJ1000.padPreset = function(deck, entry, value) {
         if (entry.release) {
             engine.setValue(echo, send, 1);
         }
+        Object.keys(entry.params || {}).forEach((key) => engine.setValue(echo, key, entry.params[key]));
         const mix = engine.getValue(unit, "mix");
         PioneerDDJ1000.holdUnit(deck, number);
         PioneerDDJ1000.heldUnits[number].mix = mix;
