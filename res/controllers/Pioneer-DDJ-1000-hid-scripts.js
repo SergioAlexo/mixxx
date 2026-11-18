@@ -126,6 +126,8 @@ PioneerDDJ1000HID.tick = function() {
         const ratio = engine.getValue(group, "rate_ratio") || 1;
         const bpm = engine.getValue(group, "bpm");
         const cue = engine.getValue(group, "cue_point");
+        const loopStart = engine.getValue(group, "loop_start_position");
+        const loopEnd = engine.getValue(group, "loop_end_position");
         PioneerDDJ1000HID.sendReport(DDJ1000Jog.statusPacket({
             deck: deck,
             playing: st.playing,
@@ -145,6 +147,12 @@ PioneerDDJ1000HID.tick = function() {
             // The key now playing and its shift, as the MIDI key display.
             keyCode: DDJ1000Jog.keyCode(engine.getValue(group, "key")),
             keyShift: engine.getValue(group, "pitch"),
+            // The deck's loop: drawn while it runs, kept (off) once left.
+            loop: loopStart >= 0 && loopEnd > loopStart ? {
+                inMs: PioneerDDJ1000HID.samplesToMs(group, loopStart),
+                outMs: PioneerDDJ1000HID.samplesToMs(group, loopEnd),
+                active: engine.getValue(group, "loop_enabled") > 0,
+            } : null,
         }));
     });
     const n = Math.min(cfg.burstChunk, pending.length);

@@ -488,6 +488,22 @@ var DDJ1000Jog = (function() {
             r[23] = p & 0xff;
             r[24] = (p >> 8) & 0xff;
         }
+        // Loop, as rekordbox sends it (captures decoded3-5): bytes 25-27 =
+        // loop in, 28-30 = loop out, both u24 LE ms. While the loop runs,
+        // byte 10 = 0x0d; a stored loop that is off keeps both points with
+        // bit 23 of the loop in set and byte 10 = 0. No loop: loop in =
+        // 0x800000, loop out = 0 (the template).
+        // opts.loop = {inMs, outMs, active} or null.
+        if (opts.loop && opts.loop.inMs >= 0 && opts.loop.outMs > opts.loop.inMs) {
+            var lin = Math.round(opts.loop.inMs) & 0x7fffff;
+            putU24le(r, 25, opts.loop.active ? lin : lin | 0x800000);
+            putU24le(r, 28, Math.round(opts.loop.outMs) & 0x7fffff);
+            r[10] = opts.loop.active ? 0x0d : 0x00;
+        } else if (opts.loop === null) {
+            putU24le(r, 25, 0x800000);
+            putU24le(r, 28, 0);
+            r[10] = 0x00;
+        }
         // byte60 = key code (keyCode(); the template's 0x02 is Am), bit 7
         // kept; byte61 = key shift + 13 (0x0d = none). rekordbox's captures
         // show byte 60 changing with the track (02 10 06 08 0f ...) and byte
@@ -605,14 +621,25 @@ var DDJ1000Jog = (function() {
         return colour;
     }
 
-    // Colours given to new hot cues set from the pads, by hot cue number
-    // (1 = first): rekordbox's hot cue colours minus orange.
+    // Colours given to new hot cues set from the pads: rekordbox's hot cue
+    // colours minus orange (kept for loops).
     var NEW_HOTCUE_COLORS = [
         0x28E214, 0x305AFF, 0xE62828, 0xC3AF04, 0xAA42FF, 0x00E0FF, 0xFF127B, 0x10B176,
     ];
+    var lastNewHotCue = -1;
 
-    function newHotCueRgb(number) {
-        return NEW_HOTCUE_COLORS[(number - 1) % NEW_HOTCUE_COLORS.length];
+    // A random one of them for each new hot cue, never the same twice in a
+    // row. random (optional, for tests) returns a number in [0, 1).
+    function newHotCueRgb(random) {
+        var pick = random || Math.random;
+        var i = Math.floor(pick() * (NEW_HOTCUE_COLORS.length - 1));
+        if (lastNewHotCue >= 0 && i >= lastNewHotCue) {
+            i++; // skip the last colour
+        } else if (lastNewHotCue < 0) {
+            i = Math.floor(pick() * NEW_HOTCUE_COLORS.length);
+        }
+        lastNewHotCue = i;
+        return NEW_HOTCUE_COLORS[i];
     }
 
     // Split a transfer body over 64-byte reports: hdr(6) + 58 payload bytes each.

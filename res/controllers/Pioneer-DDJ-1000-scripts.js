@@ -2359,13 +2359,13 @@ PioneerDDJ1000.padHotCue = function(deck, number, value, shifted) {
         return;
     }
     // Sets the cue (or saves the running loop) when empty, otherwise jumps;
-    // held while paused it previews. A new hot cue gets its own colour,
-    // never orange (kept for loops).
+    // held while paused it previews. A new hot cue gets a random colour,
+    // never orange (kept for loops) and never the last one again.
     const empty = value && !engine.getValue(group, `hotcue_${number}_status`);
     engine.setValue(group, `hotcue_${number}_activate`, value ? 1 : 0);
     if (empty && engine.getValue(group, `hotcue_${number}_status`)
             && engine.getValue(group, `hotcue_${number}_type`) !== 4) {
-        engine.setValue(group, `hotcue_${number}_color`, DDJ1000Jog.newHotCueRgb(number));
+        engine.setValue(group, `hotcue_${number}_color`, DDJ1000Jog.newHotCueRgb());
     }
     if (value) {
         state.keyboardCue = number;
