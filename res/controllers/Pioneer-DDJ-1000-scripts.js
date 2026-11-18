@@ -54,6 +54,9 @@ PioneerDDJ1000.config = {
     // A released platter's scratch that is still running this long after it
     // was handed back to playback is ended outright.
     handBackTimeoutMs: 1000,
+    // A deck pinned to its cue point returns there this long after the jog
+    // last moved.
+    cueSnapMs: 300,
     // Seconds of track per revolution when searching with SHIFT + jog.
     searchSecondsPerRevolution: 20,
     // Seconds per revolution when moving a loop point with the jog.
@@ -380,6 +383,10 @@ PioneerDDJ1000.newDeckState = function() {
         // Set once a released platter has been handed back to playback.
         handedBack: false,
         handedBackAt: 0,
+        // After CUE the paused deck is pinned to the cue point: a jog moved
+        // by accident snaps back once it stops (cueJogAt = last jog tick).
+        cuePinned: false,
+        cueJogAt: 0,
         spinTicks: [],
         mode: PioneerDDJ1000.mode.hotCue,
         page: [1, 1, 1, 1, 1, 1, 1, 1],
@@ -887,6 +894,7 @@ PioneerDDJ1000.tick = function() {
     }
     PioneerDDJ1000.decks.forEach((deck) => {
         PioneerDDJ1000.watchFreeSpin(deck, now);
+        PioneerDDJ1000.watchCuePin(deck, now);
         PioneerDDJ1000.updateSearch(deck, now);
         PioneerDDJ1000.updateClock(deck);
     });
@@ -961,6 +969,7 @@ PioneerDDJ1000.connectDeck = function(deck) {
     // another. A listener, so a redraw does not count as a load.
     PioneerDDJ1000.listen(group, "track_loaded", (value) => {
         PioneerDDJ1000.deck[deck].loopInPending = false;
+        PioneerDDJ1000.deck[deck].cuePinned = false;
         PioneerDDJ1000.updateLoopLeds(deck);
         PioneerDDJ1000.onLoad(deck, value > 0);
     });
@@ -1141,6 +1150,8 @@ PioneerDDJ1000.play = function(_channel, _control, value, _status, group) {
     }
     const deck = PioneerDDJ1000.deckFromGroup(group);
     const cfg = PioneerDDJ1000.config;
+    PioneerDDJ1000.deck[deck].cuePinned = false;
+    PioneerDDJ1000.deck[deck].cueJogAt = 0;
     // A scratch left running on an untouched platter (a flick or backspin
     // that has not handed back yet) would override PLAY: end it first so one
     // press always plays or pauses.
@@ -1167,6 +1178,40 @@ PioneerDDJ1000.play = function(_channel, _control, value, _status, group) {
 
 PioneerDDJ1000.cue = function(_channel, _control, value, _status, group) {
     engine.setValue(group, "cue_default", value ? 1 : 0);
+    if (value) {
+        // The deck ends up paused at the cue point: pin it there until PLAY.
+        const state = PioneerDDJ1000.deck[PioneerDDJ1000.deckFromGroup(group)];
+        state.cuePinned = true;
+        state.cueJogAt = 0;
+    }
+};
+
+// A jog moved while pinned to the cue point: remember when, to snap back.
+PioneerDDJ1000.cueJogMoved = function(deck, group) {
+    const state = PioneerDDJ1000.deck[deck];
+    if (state.cuePinned && !engine.getValue(group, "play")) {
+        state.cueJogAt = Date.now();
+    }
+};
+
+// From the timer: a deck pinned to its cue point goes back there once the
+// jog has stopped and is not held.
+PioneerDDJ1000.watchCuePin = function(deck, now) {
+    const state = PioneerDDJ1000.deck[deck];
+    if (!state.cuePinned || !state.cueJogAt) {
+        return;
+    }
+    const group = PioneerDDJ1000.group(deck);
+    if (engine.getValue(group, "play") && !engine.isScratching(deck)) {
+        state.cuePinned = false; // playing again: the pin is over
+        state.cueJogAt = 0;
+        return;
+    }
+    if (state.touched || engine.isScratching(deck) || now - state.cueJogAt < PioneerDDJ1000.config.cueSnapMs) {
+        return;
+    }
+    state.cueJogAt = 0;
+    engine.setValue(group, "cue_gotoandstop", 1);
 };
 
 PioneerDDJ1000.jumpToStart = function(_channel, _control, value, _status, group) {
@@ -1728,6 +1773,7 @@ PioneerDDJ1000.jogScratch = function(_channel, _control, value, _status, group) 
     const deck = PioneerDDJ1000.deckFromGroup(group);
     const state = PioneerDDJ1000.deck[deck];
     const ticks = PioneerDDJ1000.jogDelta(value);
+    PioneerDDJ1000.cueJogMoved(deck, group);
     if (state.loopAdjust) {
         PioneerDDJ1000.moveLoopPoint(deck, ticks);
     } else if (engine.isScratching(deck) && (state.touched || state.freeSpin)) {
@@ -1746,6 +1792,7 @@ PioneerDDJ1000.jogScratch = function(_channel, _control, value, _status, group) 
 PioneerDDJ1000.jogBend = function(_channel, _control, value, _status, group) {
     const deck = PioneerDDJ1000.deckFromGroup(group);
     const ticks = PioneerDDJ1000.jogDelta(value);
+    PioneerDDJ1000.cueJogMoved(deck, group);
     if (PioneerDDJ1000.deck[deck].loopAdjust) {
         PioneerDDJ1000.moveLoopPoint(deck, ticks);
     } else {
@@ -1758,6 +1805,7 @@ PioneerDDJ1000.jogRing = function(_channel, _control, value, _status, group) {
     const deck = PioneerDDJ1000.deckFromGroup(group);
     const state = PioneerDDJ1000.deck[deck];
     const ticks = PioneerDDJ1000.jogDelta(value);
+    PioneerDDJ1000.cueJogMoved(deck, group);
     if (state.loopAdjust) {
         PioneerDDJ1000.moveLoopPoint(deck, ticks);
     } else if (state.freeSpin) {
@@ -2556,6 +2604,9 @@ PioneerDDJ1000.padActions = {
 
 PioneerDDJ1000.padHotCue = function(deck, number, value, shifted) {
     const group = PioneerDDJ1000.group(deck);
+    if (value && !shifted) {
+        PioneerDDJ1000.deck[deck].cuePinned = false; // a hot cue moves the deck on purpose
+    }
     if (shifted) {
         if (value) {
             engine.setValue(group, `hotcue_${number}_clear`, 1);

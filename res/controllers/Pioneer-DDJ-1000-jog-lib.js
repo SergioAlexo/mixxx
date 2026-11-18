@@ -625,9 +625,9 @@ var DDJ1000Jog = (function() {
     }
 
     // Colours given to new hot cues set from the pads: rekordbox's hot cue
-    // colours minus orange (kept for loops).
+    // colours minus orange (kept for loops) and sky blue.
     var NEW_HOTCUE_COLORS = [
-        0x28E214, 0x305AFF, 0xE62828, 0xC3AF04, 0xAA42FF, 0x00E0FF, 0xFF127B, 0x10B176,
+        0x28E214, 0x305AFF, 0xE62828, 0xC3AF04, 0xAA42FF, 0xFF127B, 0x10B176,
     ];
     var lastNewHotCue = -1;
 
