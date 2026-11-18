@@ -200,6 +200,21 @@ PioneerDDJ1000.semitones = [
     [-4, -3, -2, -1, -8, -7, -6, -5],
 ];
 
+// KEY SHIFT has rekordbox's five pages, stepped with PAGE < / > and starting
+// on the second: +12 / +8..+11, then +4..+7 / 0..+3, -4..-1 / -8..-5,
+// -12..-9, and KEY SYNC, SEMITONE UP, +7, +12 / KEY RESET, SEMITONE DOWN, -5,
+// -12. A number is a key shift in semitones, null an unlit pad, a string a
+// Mixxx control on the deck.
+PioneerDDJ1000.keyShiftPages = [
+    [12, null, null, null, 8, 9, 10, 11],
+    [4, 5, 6, 7, 0, 1, 2, 3],
+    [-4, -3, -2, -1, -8, -7, -6, -5],
+    [-12, -11, -10, -9, null, null, null, null],
+    ["sync_key", "pitch_up", 7, 12, "reset_key", "pitch_down", -5, -12],
+];
+PioneerDDJ1000.keyShiftPad = (deck, pad) =>
+    PioneerDDJ1000.keyShiftPages[PioneerDDJ1000.deck[deck].keyPage][pad];
+
 // The PAD FX chain presets that tools/install_effects.py (ddj1000-mixxx repo)
 // installs right after the 12 BEAT FX ones, in this order.
 PioneerDDJ1000.padFxPresets = [
@@ -328,6 +343,7 @@ PioneerDDJ1000.newDeckState = function() {
         mode: PioneerDDJ1000.mode.hotCue,
         page: [1, 1, 1, 1, 1, 1, 1, 1],
         jumpPage: 2, // BEAT JUMP page, 1-3; starts on 1 2 4 8
+        keyPage: 1, // KEY SHIFT page, index into keyShiftPages; starts on 0..+7
         samplerBank: 0,
         keyboardCue: 1,
         pressed: {},
@@ -2207,8 +2223,8 @@ PioneerDDJ1000.padMode = function(_channel, control, value, _status, group) {
     }
 };
 
-// PAGE < / >. In BEAT JUMP they step through its three pages; in SAMPLER
-// they change the bank.
+// PAGE < / >. In BEAT JUMP and KEY SHIFT they step through their pages; in
+// SAMPLER they change the bank.
 PioneerDDJ1000.page = function(notes, direction) {
     return function(_channel, control, value, _status, group) {
         const mode = notes.indexOf(control);
@@ -2220,6 +2236,9 @@ PioneerDDJ1000.page = function(notes, direction) {
         state.mode = mode;
         if (mode === PioneerDDJ1000.mode.beatJump) {
             state.jumpPage = PioneerDDJ1000.clamp(state.jumpPage + direction, 1, PioneerDDJ1000.beatJumpPages.length);
+        } else if (mode === PioneerDDJ1000.mode.keyShift) {
+            state.keyPage = PioneerDDJ1000.clamp(state.keyPage + direction, 0, PioneerDDJ1000.keyShiftPages.length - 1);
+            PioneerDDJ1000.renderMode(deck, mode);
         } else if (mode === PioneerDDJ1000.mode.sampler) {
             PioneerDDJ1000.stepSamplerBank(deck, direction);
         } else {
@@ -2307,7 +2326,7 @@ PioneerDDJ1000.padActions = {
     [PioneerDDJ1000.mode.beatLoop]: (deck, page, pad, value, shifted) =>
         PioneerDDJ1000.padBeatLoop(deck, PioneerDDJ1000.beatLoopBeats[page - 1][pad], value && !shifted),
     [PioneerDDJ1000.mode.keyShift]: (deck, page, pad, value) =>
-        PioneerDDJ1000.padKeyShift(deck, PioneerDDJ1000.semitones[page - 1][pad], value),
+        PioneerDDJ1000.padKeyShift(deck, PioneerDDJ1000.keyShiftPad(deck, pad), value),
 };
 
 PioneerDDJ1000.padHotCue = function(deck, number, value, shifted) {
@@ -2572,7 +2591,9 @@ PioneerDDJ1000.padBeatLoop = function(deck, beats, pressed) {
 
 // KEY SHIFT: shift the key; the lit pad again returns to 0.
 PioneerDDJ1000.padKeyShift = function(deck, semitones, value) {
-    if (value) {
+    if (typeof semitones === "string") {
+        engine.setValue(PioneerDDJ1000.group(deck), semitones, value ? 1 : 0);
+    } else if (value && semitones !== null) {
         const group = PioneerDDJ1000.group(deck);
         const current = Math.round(engine.getValue(group, "pitch_adjust"));
         engine.setValue(group, "pitch_adjust", current === semitones ? 0 : semitones);
@@ -2721,6 +2742,28 @@ PioneerDDJ1000.semitoneColor = function(deck, mode, page, pad) {
     return mode === PioneerDDJ1000.mode.keyboard ? c.purple : c.pink;
 };
 
+// KEY SHIFT: shifts up orange (rekordbox's 39), down azure (its 9); the
+// deck's current shift blinks, as rekordbox blinks it. KEY SYNC green, KEY
+// RESET yellow, SEMITONE UP / DOWN amber, white while held.
+PioneerDDJ1000.keyShiftColor = function(deck, pad) {
+    const c = PioneerDDJ1000.color;
+    const entry = PioneerDDJ1000.keyShiftPad(deck, pad);
+    if (entry === null) {
+        return c.off;
+    }
+    if (typeof entry === "string") {
+        if (PioneerDDJ1000.isPressed(deck, PioneerDDJ1000.mode.keyShift, pad)) {
+            return c.white;
+        }
+        return {sync_key: c.green, reset_key: c.yellow}[entry] || c.amber;
+    }
+    const colour = entry < 0 ? 9 : 39;
+    if (Math.round(engine.getValue(PioneerDDJ1000.group(deck), "pitch_adjust")) === entry) {
+        return PioneerDDJ1000.blinkColor(colour, c.off);
+    }
+    return colour;
+};
+
 // Page 1 yellowish, page 2 more orange, as in rekordbox (which sends
 // 100/102, the same hues from the 64-127 half of the palette). The running
 // loop's pad, and a held pad, light white.
@@ -2746,6 +2789,5 @@ PioneerDDJ1000.padColors = {
     [PioneerDDJ1000.mode.keyboard]: (deck, page, pad) =>
         PioneerDDJ1000.semitoneColor(deck, PioneerDDJ1000.mode.keyboard, page, pad),
     [PioneerDDJ1000.mode.beatLoop]: (deck, page, pad) => PioneerDDJ1000.beatLoopColor(deck, page, pad),
-    [PioneerDDJ1000.mode.keyShift]: (deck, page, pad) =>
-        PioneerDDJ1000.semitoneColor(deck, PioneerDDJ1000.mode.keyShift, page, pad),
+    [PioneerDDJ1000.mode.keyShift]: (deck, page, pad) => PioneerDDJ1000.keyShiftColor(deck, pad),
 };
