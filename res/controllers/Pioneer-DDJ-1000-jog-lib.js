@@ -488,12 +488,37 @@ var DDJ1000Jog = (function() {
             r[23] = p & 0xff;
             r[24] = (p >> 8) & 0xff;
         }
+        // byte60 = key code (keyCode(); the template's 0x02 is Am), bit 7
+        // kept; byte61 = key shift + 13 (0x0d = none). rekordbox's captures
+        // show byte 60 changing with the track (02 10 06 08 0f ...) and byte
+        // 61 at 0d, 0e, 0f, 11 while keys were shifted.
+        if (typeof opts.keyCode === "number") {
+            r[60] = (r[60] & 0x80) | (opts.keyCode & 0x1f);
+        }
+        if (typeof opts.keyShift === "number") {
+            r[61] = 13 + clamp(Math.round(opts.keyShift), -12, 12);
+        }
         // Byte 4 bits 4-6 stay at the template's 0x1_. The firmware notes
         // guessed they hold the TEMPO RANGE, but rekordbox only sends 0x21
         // for the first few frames after start-up (every capture), then 0x11;
         // sending 0x21 all the time made the jog screen's platter spin
         // nonstop. Where the tempo range goes is not known yet.
         return r;
+    }
+
+    // Mixxx key number (1-12 C..B major, 13-24 Cm..Bm) to the unit's key code
+    // (odd = major, even = minor, each minor next to its relative major), as
+    // the jog screen and the MIDI key display take it; 0 = no key.
+    function keyCode(key) {
+        var k = Math.round(key);
+        if (k >= 1 && k <= 12) {
+            return 2 * k - 1;
+        }
+        if (k >= 13 && k <= 24) {
+            // Minor keys sit next to their relative major, three semitones up.
+            return 2 * ((k - 13 + 3) % 12) + 2;
+        }
+        return 0;
     }
 
     // -----------------------------------------------------------------------
@@ -783,6 +808,7 @@ var DDJ1000Jog = (function() {
         statusPacket: statusPacket, retarget: retarget, patternPoints: patternPoints,
         timeBytes: timeBytes, hotCuePackets: hotCuePackets, cueInfoPackets: cueInfoPackets,
         padColorFor: padColorFor, hotCueColor: hotCueColor, PALETTE_STEPS: PALETTE_STEPS,
+        keyCode: keyCode,
         newHotCueRgb: newHotCueRgb,
         wavePointsFromSummary: wavePointsFromSummary,
     };

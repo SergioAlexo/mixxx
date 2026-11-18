@@ -343,6 +343,8 @@ PioneerDDJ1000.newDeckState = function() {
         // Pads whose colour blinks, by pad note: [mode, page, pad].
         blinking: {},
         loopAdjust: null,
+        // LOOP IN pressed, LOOP OUT not yet: LOOP IN blinks.
+        loopInPending: false,
         search: null,
         searchHeld: false,
         keySync: false,
@@ -869,6 +871,9 @@ PioneerDDJ1000.connectDeck = function(deck) {
     light("pfl", [n.headphoneCue]);
 
     PioneerDDJ1000.connect(group, "loop_enabled", (value) => {
+        if (value > 0) {
+            PioneerDDJ1000.deck[deck].loopInPending = false;
+        }
         PioneerDDJ1000.sendUnit(PioneerDDJ1000.unitNote.loopRunning, deck, value > 0);
         PioneerDDJ1000.updateLoopLeds(deck);
     });
@@ -905,7 +910,11 @@ PioneerDDJ1000.connectDeck = function(deck) {
 
     // Mixxx sets track_loaded on every load, also when one track replaces
     // another. A listener, so a redraw does not count as a load.
-    PioneerDDJ1000.listen(group, "track_loaded", (value) => PioneerDDJ1000.onLoad(deck, value > 0));
+    PioneerDDJ1000.listen(group, "track_loaded", (value) => {
+        PioneerDDJ1000.deck[deck].loopInPending = false;
+        PioneerDDJ1000.updateLoopLeds(deck);
+        PioneerDDJ1000.onLoad(deck, value > 0);
+    });
     PioneerDDJ1000.connectPads(deck);
 };
 
@@ -987,18 +996,8 @@ PioneerDDJ1000.onLoad = function(deck, loaded) {
 
 PioneerDDJ1000.secondsPerRevolution = () => 60 / PioneerDDJ1000.config.vinylRpm;
 
-// Mixxx key number (1-12 C..B major, 13-24 Cm..Bm) to the unit's key code.
-PioneerDDJ1000.keyCode = function(key) {
-    const k = Math.round(key);
-    if (k >= 1 && k <= 12) {
-        return 2 * k - 1;
-    }
-    if (k >= 13 && k <= 24) {
-        // Minor keys sit next to their relative major, three semitones up.
-        return 2 * ((k - 13 + 3) % 12) + 2;
-    }
-    return 0;
-};
+// Mixxx key number to the unit's key code (shared with the jog screen).
+PioneerDDJ1000.keyCode = (key) => DDJ1000Jog.keyCode(key);
 
 // Angle of a platter spinning at 33 1/3 after the given number of seconds.
 PioneerDDJ1000.platterAngle = function(seconds) {
@@ -1199,8 +1198,29 @@ PioneerDDJ1000.loopButton = function(key) {
     };
 };
 
-PioneerDDJ1000.loopIn = PioneerDDJ1000.loopButton("loop_in");
-PioneerDDJ1000.loopOut = PioneerDDJ1000.loopButton("loop_out");
+PioneerDDJ1000.loopInButton = PioneerDDJ1000.loopButton("loop_in");
+PioneerDDJ1000.loopOutButton = PioneerDDJ1000.loopButton("loop_out");
+
+// LOOP IN sets the loop start; its button blinks from then until the loop
+// runs (LOOP OUT, or anything else that starts one), as on rekordbox.
+PioneerDDJ1000.loopIn = function(channel, control, value, status, group) {
+    const deck = PioneerDDJ1000.deckFromGroup(group);
+    const state = PioneerDDJ1000.deck[deck];
+    if (value && !state.loopAdjust && !engine.getValue(group, "loop_enabled")) {
+        state.loopInPending = true;
+    }
+    PioneerDDJ1000.loopInButton(channel, control, value, status, group);
+    PioneerDDJ1000.updateLoopLeds(deck);
+};
+
+PioneerDDJ1000.loopOut = function(channel, control, value, status, group) {
+    const deck = PioneerDDJ1000.deckFromGroup(group);
+    PioneerDDJ1000.loopOutButton(channel, control, value, status, group);
+    if (value) {
+        PioneerDDJ1000.deck[deck].loopInPending = false;
+        PioneerDDJ1000.updateLoopLeds(deck);
+    }
+};
 PioneerDDJ1000.loopHalve = PioneerDDJ1000.loopButton("loop_halve");
 PioneerDDJ1000.loopDouble = PioneerDDJ1000.loopButton("loop_double");
 
@@ -1239,14 +1259,18 @@ PioneerDDJ1000.updateLoopLeds = function(deck) {
     }
     // The loop buttons are lit while no loop runs and blink while one does,
     // as on rekordbox. While a loop end is being moved with the jog, that
-    // end's button blinks and the other stays lit.
+    // end's button blinks and the other stays lit; after LOOP IN, before
+    // LOOP OUT, LOOP IN blinks.
     const n = PioneerDDJ1000.deckNote;
     const looping = engine.getValue(PioneerDDJ1000.group(deck), "loop_enabled") > 0;
     const lit = (end) => {
         if (state.loopAdjust) {
             return state.loopAdjust === end ? PioneerDDJ1000.blink : true;
         }
-        return looping ? PioneerDDJ1000.blink : true;
+        if (looping) {
+            return PioneerDDJ1000.blink;
+        }
+        return state.loopInPending && end === "in" ? PioneerDDJ1000.blink : true;
     };
     PioneerDDJ1000.deckLed(deck, n.loopIn, lit("in"));
     PioneerDDJ1000.deckLed(deck, n.loopInShift, lit("in"));

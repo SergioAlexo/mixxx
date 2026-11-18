@@ -142,6 +142,9 @@ PioneerDDJ1000HID.tick = function() {
             cueMs: cue >= 0 ? PioneerDDJ1000HID.samplesToMs(group, cue) : -1,
             bpm: bpm,
             ratePct: (ratio - 1) * 100,
+            // The key now playing and its shift, as the MIDI key display.
+            keyCode: DDJ1000Jog.keyCode(engine.getValue(group, "key")),
+            keyShift: engine.getValue(group, "pitch"),
         }));
     });
     const n = Math.min(cfg.burstChunk, pending.length);
