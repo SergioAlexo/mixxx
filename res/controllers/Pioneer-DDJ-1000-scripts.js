@@ -178,11 +178,22 @@ PioneerDDJ1000.mode = {
 // Hot cues on the pads (two pages of 8).
 PioneerDDJ1000.padHotCues = 16;
 
-// Pads 0-3 are the top row, 4-7 the bottom row.
-PioneerDDJ1000.beatJumpBeats = [-1, 1, -2, 2, -4, 4, -8, 8];
+// BEAT JUMP has three pages, as in rekordbox: FINE 1/8 1/4 1/2, then
+// 1 2 4 8, then 16 32 64 128 beats. Each size takes two pads, back then
+// forward: pads 0-3 are the top row, 4-7 the bottom row. PAGE < / > steps
+// through them.
+PioneerDDJ1000.beatJumpFine = 1 / 32;
+PioneerDDJ1000.beatJumpPages = [
+    [PioneerDDJ1000.beatJumpFine, 1 / 8, 1 / 4, 1 / 2],
+    [1, 2, 4, 8],
+    [16, 32, 64, 128],
+];
+PioneerDDJ1000.beatJumpBeats = (deck, pad) =>
+    PioneerDDJ1000.beatJumpPages[PioneerDDJ1000.deck[deck].jumpPage - 1][pad >> 1] * (pad & 1 ? 1 : -1);
+// SHIFT + BEAT JUMP: BEAT LOOP's two pages, as in rekordbox.
 PioneerDDJ1000.beatLoopBeats = [
-    [1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32],
-    [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4],
+    [1 / 64, 1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2],
+    [4, 8, 16, 32, 64, 128, 256, 512],
 ];
 PioneerDDJ1000.semitones = [
     [4, 5, 6, 7, 0, 1, 2, 3],
@@ -289,7 +300,7 @@ PioneerDDJ1000.newDeckState = function() {
         spinTicks: [],
         mode: PioneerDDJ1000.mode.hotCue,
         page: [1, 1, 1, 1, 1, 1, 1, 1],
-        jumpScale: 1,
+        jumpPage: 2, // BEAT JUMP page, 1-3; starts on 1 2 4 8
         samplerBank: 0,
         keyboardCue: 1,
         pressed: {},
@@ -2169,8 +2180,8 @@ PioneerDDJ1000.padMode = function(_channel, control, value, _status, group) {
     }
 };
 
-// PAGE < / >. In BEAT JUMP they halve / double the jump; in SAMPLER they
-// change the bank.
+// PAGE < / >. In BEAT JUMP they step through its three pages; in SAMPLER
+// they change the bank.
 PioneerDDJ1000.page = function(notes, direction) {
     return function(_channel, control, value, _status, group) {
         const mode = notes.indexOf(control);
@@ -2181,7 +2192,7 @@ PioneerDDJ1000.page = function(notes, direction) {
         const state = PioneerDDJ1000.deck[deck];
         state.mode = mode;
         if (mode === PioneerDDJ1000.mode.beatJump) {
-            state.jumpScale = PioneerDDJ1000.clamp(state.jumpScale * (direction > 0 ? 2 : 0.5), 1 / 8, 16);
+            state.jumpPage = PioneerDDJ1000.clamp(state.jumpPage + direction, 1, PioneerDDJ1000.beatJumpPages.length);
         } else if (mode === PioneerDDJ1000.mode.sampler) {
             PioneerDDJ1000.stepSamplerBank(deck, direction);
         } else {
@@ -2413,8 +2424,7 @@ PioneerDDJ1000.releaseUnit = function(unitNumber) {
 
 PioneerDDJ1000.padBeatJump = function(deck, pad, value) {
     if (value) {
-        engine.setValue(PioneerDDJ1000.group(deck), "beatjump",
-            PioneerDDJ1000.beatJumpBeats[pad] * PioneerDDJ1000.deck[deck].jumpScale);
+        engine.setValue(PioneerDDJ1000.group(deck), "beatjump", PioneerDDJ1000.beatJumpBeats(deck, pad));
     }
 };
 
@@ -2580,12 +2590,14 @@ PioneerDDJ1000.padFxColor = function(deck, mode, page, pad) {
         : PioneerDDJ1000.padFx[mode][page - 1][pad].color;
 };
 
+// rekordbox's colours (REKORDBOX_LEDS.md): red and orange in a checkerboard,
+// one colour per size, the same on every page; a held pad takes the
+// matching low-palette colour.
+PioneerDDJ1000.beatJumpPadColors = {idle: [106, 101, 101, 106], pressed: [42, 38, 38, 42]};
+
 PioneerDDJ1000.beatJumpColor = function(deck, pad) {
-    const c = PioneerDDJ1000.color;
-    if (PioneerDDJ1000.isPressed(deck, PioneerDDJ1000.mode.beatJump, pad)) {
-        return c.white;
-    }
-    return PioneerDDJ1000.beatJumpBeats[pad] < 0 ? c.azure : c.cyan;
+    const pressed = PioneerDDJ1000.isPressed(deck, PioneerDDJ1000.mode.beatJump, pad);
+    return PioneerDDJ1000.beatJumpPadColors[pressed ? "pressed" : "idle"][pad >> 1];
 };
 
 PioneerDDJ1000.samplerColor = function(deck, pad) {
@@ -2614,13 +2626,19 @@ PioneerDDJ1000.semitoneColor = function(deck, mode, page, pad) {
     return mode === PioneerDDJ1000.mode.keyboard ? c.purple : c.pink;
 };
 
+// rekordbox's colours (REKORDBOX_LEDS.md): page 1 yellowish (100), page 2
+// more orange (102). The running loop's pad, and a held pad, go brighter:
+// 37 is what rekordbox sends for a held page 1 pad; 39 for page 2 follows
+// the same pattern but was not captured.
+PioneerDDJ1000.beatLoopPadColors = {idle: [100, 102], bright: [37, 39]};
+
 PioneerDDJ1000.beatLoopColor = function(deck, page, pad) {
-    const c = PioneerDDJ1000.color;
     const group = PioneerDDJ1000.group(deck);
     const beats = PioneerDDJ1000.beatLoopBeats[page - 1][pad];
     const active = engine.getValue(group, "loop_enabled")
         && Math.abs(engine.getValue(group, "beatloop_size") - beats) < 1e-6;
-    return active ? PioneerDDJ1000.blinkColor(c.white, c.green) : c.green;
+    const bright = active || PioneerDDJ1000.isPressed(deck, PioneerDDJ1000.mode.beatLoop, pad);
+    return PioneerDDJ1000.beatLoopPadColors[bright ? "bright" : "idle"][page - 1];
 };
 
 PioneerDDJ1000.padColors = {

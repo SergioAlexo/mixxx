@@ -715,6 +715,7 @@ ControlPickerMenu::ControlPickerMenu(QWidget* pParent)
     const QList<double> beatSizes = LoopingControl::getBeatSizes();
 
     QMap<double, QString> humanBeatSizes;
+    humanBeatSizes[0.015625] = tr("1/64");
     humanBeatSizes[0.03125] = tr("1/32");
     humanBeatSizes[0.0625] = tr("1/16");
     humanBeatSizes[0.125] = tr("1/8");

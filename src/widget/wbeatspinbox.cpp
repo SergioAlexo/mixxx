@@ -120,6 +120,8 @@ QString WBeatSpinBox::textFromValue(double value) const {
         sFracPart = fractionString(13, 16);
     } else if (dFracPart == 0.9375) {
         sFracPart = fractionString(15, 16);
+    } else if (dFracPart == 0.015625) {
+        sFracPart = fractionString(1, 64);
     } else if (dFracPart == 0.03125) {
         sFracPart = fractionString(1, 32);
     } else if (dFracPart == 0.09375) {

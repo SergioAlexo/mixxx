@@ -13,7 +13,7 @@ class WBeatSpinBox : public QDoubleSpinBox, public WBaseWidget {
     Q_OBJECT
   public:
     WBeatSpinBox(QWidget* parent, const ConfigKey& configKey, int decimals = 5,
-            double minimum = 0.03125, double maximum = 512.00);
+            double minimum = 0.015625, double maximum = 512.00);
 
     void setup(const QDomNode& node, const SkinContext& context);
 
