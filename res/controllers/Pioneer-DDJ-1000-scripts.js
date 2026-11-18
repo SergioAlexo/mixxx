@@ -51,6 +51,9 @@ PioneerDDJ1000.config = {
     // A released platter keeps driving the record while it turns faster than
     // this fraction of playing speed.
     freeSpinMinSpeed: 0.2,
+    // A released platter's scratch that is still running this long after it
+    // was handed back to playback is ended outright.
+    handBackTimeoutMs: 1000,
     // Seconds of track per revolution when searching with SHIFT + jog.
     searchSecondsPerRevolution: 20,
     // Seconds per revolution when moving a loop point with the jog.
@@ -376,6 +379,7 @@ PioneerDDJ1000.newDeckState = function() {
         freeSpin: false,
         // Set once a released platter has been handed back to playback.
         handedBack: false,
+        handedBackAt: 0,
         spinTicks: [],
         mode: PioneerDDJ1000.mode.hotCue,
         page: [1, 1, 1, 1, 1, 1, 1, 1],
@@ -1137,6 +1141,13 @@ PioneerDDJ1000.play = function(_channel, _control, value, _status, group) {
     }
     const deck = PioneerDDJ1000.deckFromGroup(group);
     const cfg = PioneerDDJ1000.config;
+    // A scratch left running on an untouched platter (a flick or backspin
+    // that has not handed back yet) would override PLAY: end it first so one
+    // press always plays or pauses.
+    if (engine.isScratching(deck) && !PioneerDDJ1000.deck[deck].touched
+            && !engine.isBrakeActive(deck) && !engine.isSpinbackActive(deck)) {
+        PioneerDDJ1000.endScratch(deck);
+    }
     if (engine.isBrakeActive(deck)) {
         engine.brake(deck, false);
         PioneerDDJ1000.slipReturn(deck);
@@ -1715,12 +1726,18 @@ PioneerDDJ1000.jogTouch = function(_channel, _control, value, _status, group) {
 
 PioneerDDJ1000.jogScratch = function(_channel, _control, value, _status, group) {
     const deck = PioneerDDJ1000.deckFromGroup(group);
+    const state = PioneerDDJ1000.deck[deck];
     const ticks = PioneerDDJ1000.jogDelta(value);
-    if (PioneerDDJ1000.deck[deck].loopAdjust) {
+    if (state.loopAdjust) {
         PioneerDDJ1000.moveLoopPoint(deck, ticks);
-    } else if (engine.isScratching(deck)) {
-        PioneerDDJ1000.recordSpin(PioneerDDJ1000.deck[deck], ticks, Date.now());
+    } else if (engine.isScratching(deck) && (state.touched || state.freeSpin)) {
+        PioneerDDJ1000.recordSpin(state, ticks, Date.now());
         engine.scratchTick(deck, ticks);
+    } else if (engine.isScratching(deck)) {
+        // Untouched and handed back: the platter is coasting while Mixxx
+        // ramps back to playback. Feeding these ticks would reset the ramp
+        // and the record would follow the spinning platter.
+        state.settledAt = Date.now();
     } else {
         PioneerDDJ1000.bend(group, ticks);
     }
@@ -1760,6 +1777,17 @@ PioneerDDJ1000.bend = function(group, ticks) {
     engine.setValue(group, "jog", ticks * cfg.bendPerRevolution / cfg.jogTicksPerRevolution);
 };
 
+// End a scratch on an untouched deck at once: no ramp, the deck goes back to
+// its own play state and speed. The platter is ignored until it rests.
+PioneerDDJ1000.endScratch = function(deck) {
+    const state = PioneerDDJ1000.deck[deck];
+    state.freeSpin = false;
+    state.handedBack = false;
+    state.settling = true;
+    state.settledAt = Date.now();
+    engine.scratchDisable(deck, false);
+};
+
 // From the timer: hand a released platter back to normal playback once it
 // has slowed down or stopped reporting.
 PioneerDDJ1000.watchFreeSpin = function(deck, now) {
@@ -1781,6 +1809,12 @@ PioneerDDJ1000.watchFreeSpin = function(deck, now) {
     // ramp read the platter as stopped for a step; doing that every tick kept
     // the speed dipping and the scratch from ever ending (audible flutter).
     if (state.handedBack) {
+        // The ramp back to playback should take well under a second. If the
+        // deck is still scratching after that, end the scratch outright
+        // rather than leave the record following the platter.
+        if (now - state.handedBackAt > PioneerDDJ1000.config.handBackTimeoutMs) {
+            PioneerDDJ1000.endScratch(deck);
+        }
         return;
     }
     const lastReport = state.spinTicks.length ? state.spinTicks[state.spinTicks.length - 1][0] : 0;
@@ -1788,6 +1822,7 @@ PioneerDDJ1000.watchFreeSpin = function(deck, now) {
             || PioneerDDJ1000.spinSpeed(state, now) < PioneerDDJ1000.config.freeSpinMinSpeed) {
         state.freeSpin = false;
         state.handedBack = true;
+        state.handedBackAt = now;
         state.settling = true;
         state.settledAt = now;
         // With SLIP on the track jumps back at once, so there is no speed to
