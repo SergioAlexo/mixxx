@@ -860,7 +860,6 @@ PioneerDDJ1000.connectDeck = function(deck) {
     light("sync_enabled", [n.beatSync]);
     light("sync_mode", [n.syncLeader], (value) => value === 2);
     light("keylock", [n.masterTempo, n.tempoRange]);
-    light("loop_enabled", [n.beatLoop4, n.beatLoop4Shift]);
     light("quantize", [n.quantize]);
     // SLIP stays lit while slip_enabled is briefly off for a return.
     const slipOn = (value) => value > 0 || PioneerDDJ1000.deck[deck].slipMode;
@@ -1238,18 +1237,23 @@ PioneerDDJ1000.updateLoopLeds = function(deck) {
     if (!state) {
         return;
     }
+    // The loop buttons are lit while no loop runs and blink while one does,
+    // as on rekordbox. While a loop end is being moved with the jog, that
+    // end's button blinks and the other stays lit.
     const n = PioneerDDJ1000.deckNote;
     const looping = engine.getValue(PioneerDDJ1000.group(deck), "loop_enabled") > 0;
     const lit = (end) => {
-        if (state.loopAdjust === end) {
-            return PioneerDDJ1000.blink;
+        if (state.loopAdjust) {
+            return state.loopAdjust === end ? PioneerDDJ1000.blink : true;
         }
-        return state.loopAdjust ? true : looping;
+        return looping ? PioneerDDJ1000.blink : true;
     };
     PioneerDDJ1000.deckLed(deck, n.loopIn, lit("in"));
     PioneerDDJ1000.deckLed(deck, n.loopInShift, lit("in"));
     PioneerDDJ1000.deckLed(deck, n.loopOut, lit("out"));
     PioneerDDJ1000.deckLed(deck, n.loopOutShift, lit("out"));
+    PioneerDDJ1000.deckLed(deck, n.beatLoop4, lit("4beat"));
+    PioneerDDJ1000.deckLed(deck, n.beatLoop4Shift, lit("4beat"));
 };
 
 PioneerDDJ1000.moveLoopPoint = function(deck, ticks) {
