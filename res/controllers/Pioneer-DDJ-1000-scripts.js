@@ -67,8 +67,9 @@ PioneerDDJ1000.config = {
     // At most this many sampler banks of 8 pads. Only banks of samplers that
     // exist in Mixxx are used; the mapping never adds samplers.
     samplerBanks: 8,
-    beatValues: [1 / 16, 1 / 8, 1 / 4, 1 / 2, 3 / 4, 1, 2, 4, 8, 16, 32],
-    defaultBeatIndex: 5,
+    // After FX SELECT moves or an effect name goes to the FX screen, the unit
+    // flickers its BEAT FX ON/OFF state for ~70 ms; ignore it this long.
+    beatFxStateGlitchMs: 200,
     // Mixxx's shortest timer. The display predicts the position between
     // Mixxx's 15-per-second position updates, so the bar turns smoothly.
     displayIntervalMs: 20,
@@ -274,6 +275,30 @@ PioneerDDJ1000.beatFxPositions = [
     "FLANGER", "PHASER", "PITCH", "SLIP ROLL", "ROLL", "MOBIUS SAW", "MOBIUS TRI",
 ];
 
+// The values BEAT < / > step through for each effect, as the unit shows them
+// under the effect name, and the one each effect starts at.
+PioneerDDJ1000.beatFxParams = (function() {
+    const beats = ["1/16", "1/8", "1/4", "1/2", "3/4", "1", "2", "4", "8"];
+    const toEight = {values: beats, start: "1"};
+    const toSixteen = {values: beats.concat(["16"]), start: "1"};
+    const toSixtyFour = {values: beats.concat(["16", "32", "64"]), start: "1"};
+    const signed = {
+        values: ["-64", "-32", "-16", "-8", "-4", "-2", "-1", "-1/2",
+            "+1/2", "+1", "+2", "+4", "+8", "+16", "+32"],
+        start: "+1",
+    };
+    return {
+        "LOW CUT ECHO": toEight, "ECHO": toEight, "MT DELAY": toEight, "SPIRAL": toEight,
+        "REVERB": {values: ["1%", "10%", "25%", "50%", "75%", "90%", "100%"], start: "50%"},
+        "TRANS": toSixteen,
+        "ENIGMA JET": signed,
+        "FLANGER": toSixtyFour, "PHASER": toSixtyFour,
+        "PITCH": {values: ["-50%", "-37%", "-25%", "0%", "25%", "50%", "100%"], start: "0%"},
+        "SLIP ROLL": toEight, "ROLL": toEight,
+        "MOBIUS SAW": signed, "MOBIUS TRI": signed,
+    };
+}());
+
 // Memory cues (MEMORY / CUE/LOOP CALL) use hot cues 17-36; pads use 1-16.
 PioneerDDJ1000.memoryFirst = 17;
 PioneerDDJ1000.memoryLast = 36;
@@ -309,7 +334,9 @@ PioneerDDJ1000.samplersConnected = 0;
 PioneerDDJ1000.beatFx = {
     // FX SELECT position, or null until it is first moved.
     position: null,
-    beatIndex: PioneerDDJ1000.config.defaultBeatIndex,
+    // BEAT < / > value per FX SELECT position, as an index into its
+    // beatFxParams list; unset positions start at the list's default.
+    paramIndex: {},
     // CH SELECT position, or null until it is first moved.
     target: null,
     // Whether LEVEL/DEPTH has been moved yet.
@@ -320,6 +347,12 @@ PioneerDDJ1000.beatFx = {
     // What the FX screen was last sent (name, beat text, BPM x 100); null
     // fields are resent.
     screen: {name: null, beat: null, bpm: null},
+    // FX screen SysEx waiting to go out, one per tick (see updateFxScreen).
+    screenQueue: [],
+    // BEAT FX ON/OFF reports (0x46) are ignored until then (Date.now() ms),
+    // see beatFxState(); resyncState sends ours back once that is over.
+    ignoreStateUntil: 0,
+    resyncState: false,
 };
 
 PioneerDDJ1000.colorFx = 0;
@@ -787,6 +820,7 @@ PioneerDDJ1000.incomingData = function(data) {
             PioneerDDJ1000.jogReplayInitBurst();
             // The burst sets the FX screen to its captured LOW CUT ECHO, 1, 120.00.
             PioneerDDJ1000.beatFx.screen = {name: null, beat: null, bpm: null};
+            PioneerDDJ1000.beatFx.screenQueue = [];
         }
     }
 };
@@ -1967,7 +2001,29 @@ PioneerDDJ1000.rollType = function() {
     return name === "ROLL" ? "loop" : null;
 };
 
-PioneerDDJ1000.beatValue = () => PioneerDDJ1000.config.beatValues[PioneerDDJ1000.beatFx.beatIndex];
+// The BEAT < / > list of the selected effect (LOW CUT ECHO's until FX SELECT
+// is first moved) and the index of its current value.
+PioneerDDJ1000.beatFxParam = function() {
+    const fx = PioneerDDJ1000.beatFx;
+    const position = fx.position === null ? 0 : fx.position;
+    const param = PioneerDDJ1000.beatFxParams[PioneerDDJ1000.beatFxPositions[position]];
+    if (fx.paramIndex[position] === undefined) {
+        fx.paramIndex[position] = param.values.indexOf(param.start);
+    }
+    return {param: param, position: position, index: fx.paramIndex[position]};
+};
+
+// The current BEAT < / > value as the FX screen shows it.
+PioneerDDJ1000.beatText = function() {
+    const current = PioneerDDJ1000.beatFxParam();
+    return current.param.values[current.index];
+};
+
+// The current value in beats, for SLIP ROLL and ROLL ("1/16" -> 0.0625).
+PioneerDDJ1000.beatValue = function() {
+    const [num, den] = PioneerDDJ1000.beatText().split("/").map(Number);
+    return den ? num / den : num;
+};
 
 // CH SELECT: route effect unit 1 to the selected source alone. MIC is
 // Mixxx's microphone channels.
@@ -2007,8 +2063,9 @@ PioneerDDJ1000.beatFxSelect = function(_channel, control, value) {
     if (!value || position === PioneerDDJ1000.beatFx.position) {
         return;
     }
+    PioneerDDJ1000.ignoreBeatFxState();
     const wasOn = PioneerDDJ1000.beatFx.on;
-    PioneerDDJ1000.setBeatFx(false);
+    PioneerDDJ1000.setBeatFx(false, false);
     PioneerDDJ1000.beatFx.position = position;
     if (!PioneerDDJ1000.rollType()) {
         const preset = PioneerDDJ1000.beatFxPositions
@@ -2018,7 +2075,7 @@ PioneerDDJ1000.beatFxSelect = function(_channel, control, value) {
             engine.setValue(PioneerDDJ1000.beatFxUnit, "loaded_chain_preset", preset);
         }
     }
-    PioneerDDJ1000.setBeatFx(wasOn);
+    PioneerDDJ1000.setBeatFx(wasOn, false);
 };
 
 // CH SELECT: CH1-CH4, MASTER, MIC, SAMPLER.
@@ -2028,10 +2085,10 @@ PioneerDDJ1000.beatFxChannel = function(_channel, control, value) {
         return;
     }
     const wasOn = PioneerDDJ1000.beatFx.on;
-    PioneerDDJ1000.setBeatFx(false);
+    PioneerDDJ1000.setBeatFx(false, false);
     PioneerDDJ1000.beatFx.target = target;
     PioneerDDJ1000.routeBeatFx(target);
-    PioneerDDJ1000.setBeatFx(wasOn);
+    PioneerDDJ1000.setBeatFx(wasOn, false);
 };
 
 PioneerDDJ1000.beatFxLevel = function(_channel, control, value, status) {
@@ -2048,8 +2105,25 @@ PioneerDDJ1000.beatFxOn = function(_channel, _control, value) {
     }
 };
 
+// The unit flickers its BEAT FX ON/OFF report for a moment after FX SELECT
+// moves or an effect name arrives (0a), and can end on the wrong state.
+PioneerDDJ1000.ignoreBeatFxState = function() {
+    const fx = PioneerDDJ1000.beatFx;
+    // The name goes out up to two ticks later, so start the window from then.
+    fx.ignoreStateUntil = Date.now() + PioneerDDJ1000.config.beatFxStateGlitchMs +
+        PioneerDDJ1000.config.displayIntervalMs * (fx.screenQueue.length + 1);
+};
+
 // What the DDJ-1000 actually sends for BEAT FX ON/OFF: its latched state.
 PioneerDDJ1000.beatFxState = function(_channel, _control, value) {
+    const fx = PioneerDDJ1000.beatFx;
+    if (Date.now() < fx.ignoreStateUntil) {
+        fx.resyncState = true;
+        return;
+    }
+    // The unit already lights the button for the state it reports: record it
+    // as sent so it is not echoed back.
+    PioneerDDJ1000.sent[`${PioneerDDJ1000.midiStatus.beatFx}:${PioneerDDJ1000.beatFxNote.state}`] = value > 0 ? 0x7F : 0x00;
     if ((value > 0) !== PioneerDDJ1000.beatFx.on) {
         PioneerDDJ1000.setBeatFx(value > 0);
     }
@@ -2089,7 +2163,10 @@ PioneerDDJ1000.enableBeatFxSlots = function() {
         .forEach((slot) => PioneerDDJ1000.override(slot, "enabled", 1));
 };
 
-PioneerDDJ1000.setBeatFx = function(on) {
+// The unit takes the 0x46 light as its BEAT FX ON/OFF state and reports every
+// change back on 0x46, so the light is only sent for a real change (light:
+// false while FX SELECT / CH SELECT briefly switch the effect off and on).
+PioneerDDJ1000.setBeatFx = function(on, light = true) {
     const fx = PioneerDDJ1000.beatFx;
     const roll = PioneerDDJ1000.rollType();
     if (on) {
@@ -2105,7 +2182,9 @@ PioneerDDJ1000.setBeatFx = function(on) {
     }
     fx.on = on;
     engine.setValue(PioneerDDJ1000.beatFxUnit, "enabled", on && !roll ? 1 : 0);
-    PioneerDDJ1000.beatFxLed(PioneerDDJ1000.beatFxNote.state, on);
+    if (light) {
+        PioneerDDJ1000.beatFxLed(PioneerDDJ1000.beatFxNote.state, on);
+    }
 };
 
 PioneerDDJ1000.startRoll = function(deck, beats, slip) {
@@ -2141,10 +2220,14 @@ PioneerDDJ1000.beatStep = function(direction, note) {
         if (!value) {
             return;
         }
-        const fx = PioneerDDJ1000.beatFx;
-        fx.beatIndex = PioneerDDJ1000.clamp(fx.beatIndex + direction, 0, PioneerDDJ1000.config.beatValues.length - 1);
+        const current = PioneerDDJ1000.beatFxParam();
+        const index = PioneerDDJ1000.clamp(current.index + direction, 0, current.param.values.length - 1);
+        if (index === current.index) {
+            return;
+        }
+        PioneerDDJ1000.beatFx.paramIndex[current.position] = index;
         if (PioneerDDJ1000.rollType()) {
-            fx.rolling.forEach((deck) => {
+            PioneerDDJ1000.beatFx.rolling.forEach((deck) => {
                 engine.setValue(PioneerDDJ1000.group(deck), "beatloop_size", PioneerDDJ1000.beatValue());
             });
         } else {
@@ -2174,35 +2257,45 @@ PioneerDDJ1000.fxBpmDeck = function() {
         || null;
 };
 
-// Beat values as the FX screen shows them: 1/16 ... 3/4, 1 ... 32.
-PioneerDDJ1000.beatText = function(beats) {
-    if (beats >= 1) {
-        return String(beats);
-    }
-    return beats === 3 / 4 ? "3/4" : `1/${Math.round(1 / beats)}`;
-};
-
+// The unit keeps only the last of several FX screen messages that arrive
+// together (rekordbox spaces them 2-4 ms apart), so they are queued and sent
+// one per tick. It redraws the value under the effect name (0b) only after a
+// name (0a), and ignores names that are not its own effect names, so a beat
+// change resends the name. Order as rekordbox: name, beat, BPM.
 PioneerDDJ1000.updateFxScreen = function() {
     const fx = PioneerDDJ1000.beatFx;
+    const queued = fx.screenQueue.shift();
+    if (queued) {
+        PioneerDDJ1000.jogSend(queued);
+        return;
+    }
+    if (fx.resyncState && Date.now() >= fx.ignoreStateUntil) {
+        // Put the unit's latched BEAT FX state (and light) back to ours.
+        fx.resyncState = false;
+        PioneerDDJ1000.send(PioneerDDJ1000.midiStatus.beatFx, PioneerDDJ1000.beatFxNote.state, fx.on ? 0x7F : 0x00, true);
+    }
     const screen = fx.screen;
     const name = fx.position === null ? null : PioneerDDJ1000.beatFxPositions[fx.position];
-    if (name !== null && name !== screen.name) {
-        screen.name = name;
-        PioneerDDJ1000.jogSend(DDJ1000Jog.buildFxName(name));
-    }
     const deck = PioneerDDJ1000.fxBpmDeck();
     const bpm = deck ? engine.getValue(PioneerDDJ1000.group(deck), "bpm") : 0;
     // rekordbox sends 120.00 for an empty deck.
     const value = Math.round((bpm > 0 ? bpm : 120) * 100);
-    const beat = PioneerDDJ1000.beatText(PioneerDDJ1000.beatValue());
-    if (value === screen.bpm && beat === screen.beat) {
+    const beat = PioneerDDJ1000.beatText();
+    const nameChanged = name !== null && name !== screen.name;
+    const beatChanged = beat !== screen.beat;
+    if (!nameChanged && !beatChanged && value === screen.bpm) {
         return;
     }
-    // rekordbox always sends the beat and BPM together, beat first.
+    if ((nameChanged || beatChanged) && name !== null) {
+        screen.name = name;
+        fx.screenQueue.push(DDJ1000Jog.buildFxName(name));
+        PioneerDDJ1000.ignoreBeatFxState();
+    }
     screen.beat = beat;
     screen.bpm = value;
-    PioneerDDJ1000.jogSend(DDJ1000Jog.buildFxBeat(beat));
-    PioneerDDJ1000.jogSend(DDJ1000Jog.buildFxBpm(value / 100));
+    fx.screenQueue.push(DDJ1000Jog.buildFxBeat(beat));
+    fx.screenQueue.push(DDJ1000Jog.buildFxBpm(value / 100));
+    PioneerDDJ1000.jogSend(fx.screenQueue.shift());
 };
 
 // SHIFT + BEAT < / > (AUTO / TAP in rekordbox): Mixxx effects follow the deck
