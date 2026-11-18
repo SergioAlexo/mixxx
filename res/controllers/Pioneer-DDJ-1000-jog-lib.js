@@ -488,25 +488,12 @@ var DDJ1000Jog = (function() {
             r[23] = p & 0xff;
             r[24] = (p >> 8) & 0xff;
         }
-        // byte4 bits 4-6 = TEMPO RANGE index + 1 (firmware STAGE2_LCD.md):
-        // 1 = +-6 %, 2 = +-10 %, 3 = +-16 %, 4 = WIDE. rekordbox sends 0x11
-        // at +-6 and 0x21 at +-10.
-        if (typeof opts.rangeIndex === "number") {
-            r[4] = (r[4] & 0x8f) | (((clamp(opts.rangeIndex, 0, 3) + 1) & 0x07) << 4);
-        }
+        // Byte 4 bits 4-6 stay at the template's 0x1_. The firmware notes
+        // guessed they hold the TEMPO RANGE, but rekordbox only sends 0x21
+        // for the first few frames after start-up (every capture), then 0x11;
+        // sending 0x21 all the time made the jog screen's platter spin
+        // nonstop. Where the tempo range goes is not known yet.
         return r;
-    }
-
-    // TEMPO RANGE index (0 = +-6, 1 = +-10, 2 = +-16, 3 = WIDE) for a Mixxx
-    // rateRange (0.06 = +-6 %): the smallest range that covers it.
-    function tempoRangeIndex(rateRange) {
-        var ranges = [0.06, 0.10, 0.16];
-        for (var i = 0; i < ranges.length; i++) {
-            if (rateRange <= ranges[i] + 0.001) {
-                return i;
-            }
-        }
-        return 3;
     }
 
     // -----------------------------------------------------------------------
@@ -795,7 +782,6 @@ var DDJ1000Jog = (function() {
         artPackets: artPackets, beatgridPackets: beatgridPackets, makeBeats: makeBeats,
         statusPacket: statusPacket, retarget: retarget, patternPoints: patternPoints,
         timeBytes: timeBytes, hotCuePackets: hotCuePackets, cueInfoPackets: cueInfoPackets,
-        tempoRangeIndex: tempoRangeIndex,
         padColorFor: padColorFor, hotCueColor: hotCueColor, PALETTE_STEPS: PALETTE_STEPS,
         newHotCueRgb: newHotCueRgb,
         wavePointsFromSummary: wavePointsFromSummary,

@@ -142,7 +142,6 @@ PioneerDDJ1000HID.tick = function() {
             cueMs: cue >= 0 ? PioneerDDJ1000HID.samplesToMs(group, cue) : -1,
             bpm: bpm,
             ratePct: (ratio - 1) * 100,
-            rangeIndex: DDJ1000Jog.tempoRangeIndex(engine.getValue(group, "rateRange")),
         }));
     });
     const n = Math.min(cfg.burstChunk, pending.length);
