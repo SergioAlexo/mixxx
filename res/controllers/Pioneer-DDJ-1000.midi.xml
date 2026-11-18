@@ -26,20 +26,20 @@
             </option>
         </group>
         <group label="SOUND COLOR FX">
-            <option variable="colorFxNeedsButton" type="boolean" default="false"
+            <option variable="colorFxNeedsButton" type="boolean" default="true"
                 label="COLOR knobs only work while a SOUND COLOR FX button is on">
                 <description>
-                    Off: the COLOR knobs always control each deck's Quick Effect.
-                    On: they do nothing until a SOUND COLOR FX button is lit, as in rekordbox.
+                    On (default): they do nothing until a SOUND COLOR FX button is lit, as in rekordbox.
+                    Off: the COLOR knobs always control each deck's Quick Effect (a filter when no button is lit).
                 </description>
             </option>
-            <option variable="colorFxPreset1" type="integer" min="0" max="99" default="0"
+            <option variable="colorFxPreset1" type="integer" min="0" max="99" default="1"
                 label="DUB ECHO button: Quick Effect preset number (0 = keep)"/>
-            <option variable="colorFxPreset2" type="integer" min="0" max="99" default="0"
+            <option variable="colorFxPreset2" type="integer" min="0" max="99" default="2"
                 label="PITCH button: Quick Effect preset number (0 = keep)"/>
-            <option variable="colorFxPreset3" type="integer" min="0" max="99" default="0"
+            <option variable="colorFxPreset3" type="integer" min="0" max="99" default="3"
                 label="NOISE button: Quick Effect preset number (0 = keep)"/>
-            <option variable="colorFxPreset4" type="integer" min="0" max="99" default="0"
+            <option variable="colorFxPreset4" type="integer" min="0" max="99" default="4"
                 label="FILTER button: Quick Effect preset number (0 = keep)"/>
         </group>
         <group label="Jog displays">

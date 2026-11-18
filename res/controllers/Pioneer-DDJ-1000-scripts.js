@@ -2027,16 +2027,11 @@ PioneerDDJ1000.samplerCue = function(_channel, _control, value) {
 // SOUND COLOR FX (the decks' Quick Effects)
 // ---------------------------------------------------------------------------
 
+// The SOUND COLOR FX buttons latch in the unit: each press sends one message
+// with the button's new state (7F on, 00 off), not a press and a release.
+// A 00 for a button that is not the lit one is ignored (it is the unit
+// turning the old one off when another is pressed).
 PioneerDDJ1000.colorFxButton = function(_channel, control, value) {
-    if (value) {
-        const which = (control & 0x03) + 1;
-        PioneerDDJ1000.colorFx = PioneerDDJ1000.colorFx === which ? 0 : which;
-        PioneerDDJ1000.applyColorFx();
-    }
-};
-
-// The unit reports which SOUND COLOR FX is on (notes 0x10-0x13).
-PioneerDDJ1000.colorFxState = function(_channel, control, value) {
     const which = (control & 0x03) + 1;
     if (value) {
         PioneerDDJ1000.colorFx = which;
@@ -2048,24 +2043,39 @@ PioneerDDJ1000.colorFxState = function(_channel, control, value) {
     PioneerDDJ1000.applyColorFx();
 };
 
-// Each button can load a Quick Effect chain preset (setting colorFxPreset1-4,
-// 0 keeps the decks' own). By default the COLOR knobs always work, as Mixxx
-// users expect; the colorFxNeedsButton setting makes them silent until a
-// button is on, as in rekordbox.
+// Notes 0x10-0x13 (the same state, if the unit reports it there).
+PioneerDDJ1000.colorFxState = PioneerDDJ1000.colorFxButton;
+
+// Each button loads its Quick Effect chain preset on every deck (settings
+// colorFxPreset1-4, default 1-4 = the "DDJ CFX - Dub Echo/Pitch/Noise/Filter"
+// presets tools/install_effects.py puts first in the Quick Effect list; 0
+// keeps the decks' own). By default (setting colorFxNeedsButton) the COLOR
+// knobs do nothing until a button is lit, as in rekordbox: the Quick Effect
+// is switched off. With that setting off the knobs always work, and with no
+// button lit the FILTER preset is loaded so they act as a plain filter.
 PioneerDDJ1000.applyColorFx = function() {
     const which = PioneerDDJ1000.colorFx;
-    const preset = which ? PioneerDDJ1000.setting(`colorFxPreset${which}`, 0) : 0;
-    const needsButton = PioneerDDJ1000.setting("colorFxNeedsButton", false);
+    const preset = PioneerDDJ1000.setting(`colorFxPreset${which || 4}`, which || 4);
+    const needsButton = PioneerDDJ1000.setting("colorFxNeedsButton", true);
+    const knobs = {};
     PioneerDDJ1000.decks.forEach((deck) => {
         const unit = `[QuickEffectRack1_${PioneerDDJ1000.group(deck)}]`;
         if (preset > 0 && preset < engine.getValue(unit, "num_chain_presets")
                 && engine.getValue(unit, "loaded_chain_preset") !== preset) {
+            knobs[unit] = engine.getValue(unit, "super1");
             engine.setValue(unit, "loaded_chain_preset", preset);
         }
         if (needsButton) {
             PioneerDDJ1000.override(unit, "enabled", which ? 1 : 0);
         }
     });
+    // A preset sets the super knob to its own value as it loads; put each
+    // deck's back to where its COLOR knob is once it has.
+    if (Object.keys(knobs).length) {
+        engine.beginTimer(PioneerDDJ1000.config.beatFxPresetLoadMs, () => {
+            Object.keys(knobs).forEach((unit) => engine.setValue(unit, "super1", knobs[unit]));
+        }, true);
+    }
     PioneerDDJ1000.updateColorFxLeds();
 };
 
