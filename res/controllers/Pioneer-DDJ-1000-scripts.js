@@ -70,6 +70,12 @@ PioneerDDJ1000.config = {
     // After FX SELECT moves or an effect name goes to the FX screen, the unit
     // flickers its BEAT FX ON/OFF state for ~70 ms; ignore it this long.
     beatFxStateGlitchMs: 200,
+    // Time for Mixxx to load a Beat FX chain preset before its BEAT value is set.
+    beatFxPresetLoadMs: 150,
+    // TAP: a pause this long starts a new count; the BPM is the average of
+    // the last tapAverage intervals.
+    tapResetMs: 2000,
+    tapAverage: 4,
     // Mixxx's shortest timer. The display predicts the position between
     // Mixxx's 15-per-second position updates, so the bar turns smoothly.
     displayIntervalMs: 20,
@@ -353,6 +359,11 @@ PioneerDDJ1000.beatFx = {
     // see beatFxState(); resyncState sends ours back once that is over.
     ignoreStateUntil: 0,
     resyncState: false,
+    // SHIFT + BEAT >: tapped BPM (null: follow the deck), the tap times, and
+    // the deck BPM the effect was last scaled for.
+    tapBpm: null,
+    taps: [],
+    tapDeckBpm: null,
 };
 
 PioneerDDJ1000.colorFx = 0;
@@ -2019,6 +2030,47 @@ PioneerDDJ1000.beatText = function() {
     return current.param.values[current.index];
 };
 
+// What the BEAT < / > value sets in Mixxx: parameter 1 of the chain's first
+// effect, which the DDJ Beat presets (tools/install_effects.py) make Echo's
+// time (beats, up to 2), Flanger's speed (1/4-32 beats), Phaser's period
+// (beats, up to 4), Reverb's decay (0-1) or Pitch shift's pitch (octaves).
+// Values past Mixxx's range are clamped; the sign of ENIGMA JET / MOBIUS
+// values has no Mixxx counterpart and is dropped.
+PioneerDDJ1000.beatFxParamKind = {
+    "LOW CUT ECHO": "echo", "ECHO": "echo", "MT DELAY": "echo", "SPIRAL": "echo", "TRANS": "echo",
+    "REVERB": "reverb",
+    "ENIGMA JET": "flanger", "FLANGER": "flanger", "MOBIUS TRI": "flanger",
+    "PHASER": "phaser", "MOBIUS SAW": "phaser",
+    "PITCH": "pitch",
+};
+
+PioneerDDJ1000.applyBeatFxParam = function() {
+    PioneerDDJ1000.beatFx.tapDeckBpm = PioneerDDJ1000.fxDeckBpm();
+    const current = PioneerDDJ1000.beatFxParam();
+    const kind = PioneerDDJ1000.beatFxParamKind[PioneerDDJ1000.beatFxPositions[current.position]];
+    const text = current.param.values[current.index];
+    let value;
+    if (kind === "reverb" || kind === "pitch") {
+        const percent = parseFloat(text);
+        // Pitch shift is 2^pitch: +100 % is one octave up, -50 % one down.
+        value = kind === "reverb" ? percent / 100 : Math.log2(1 + percent / 100);
+    } else {
+        const range = {echo: [1 / 16, 2], flanger: [1 / 4, 32], phaser: [1 / 16, 4]}[kind];
+        if (!range) {
+            return;
+        }
+        let beats = Math.abs(PioneerDDJ1000.beatValue());
+        const fx = PioneerDDJ1000.beatFx;
+        const deckBpm = fx.tapDeckBpm;
+        if (fx.tapBpm !== null && deckBpm > 0) {
+            // Mixxx counts these beats at the deck's tempo.
+            beats *= deckBpm / fx.tapBpm;
+        }
+        value = PioneerDDJ1000.clamp(beats, range[0], range[1]);
+    }
+    engine.setValue("[EffectRack1_EffectUnit1_Effect1]", "parameter1", value);
+};
+
 // The current value in beats, for SLIP ROLL and ROLL ("1/16" -> 0.0625).
 PioneerDDJ1000.beatValue = function() {
     const [num, den] = PioneerDDJ1000.beatText().split("/").map(Number);
@@ -2073,6 +2125,9 @@ PioneerDDJ1000.beatFxSelect = function(_channel, control, value) {
             .filter((name) => name !== "SLIP ROLL" && name !== "ROLL").length;
         if (preset < engine.getValue(PioneerDDJ1000.beatFxUnit, "num_chain_presets")) {
             engine.setValue(PioneerDDJ1000.beatFxUnit, "loaded_chain_preset", preset);
+            // The preset loads its own parameter values a moment later; put
+            // this effect's BEAT value back once it has.
+            engine.beginTimer(PioneerDDJ1000.config.beatFxPresetLoadMs, PioneerDDJ1000.applyBeatFxParam, true);
         }
     }
     PioneerDDJ1000.setBeatFx(wasOn, false);
@@ -2231,9 +2286,7 @@ PioneerDDJ1000.beatStep = function(direction, note) {
                 engine.setValue(PioneerDDJ1000.group(deck), "beatloop_size", PioneerDDJ1000.beatValue());
             });
         } else {
-            const slot = "[EffectRack1_EffectUnit1_Effect1]";
-            engine.setParameter(slot, "parameter1",
-                PioneerDDJ1000.clamp(engine.getParameter(slot, "parameter1") + direction / 16, 0, 1));
+            PioneerDDJ1000.applyBeatFxParam();
         }
     };
 };
@@ -2246,6 +2299,12 @@ PioneerDDJ1000.beatUp = PioneerDDJ1000.beatStep(1, PioneerDDJ1000.beatFxNote.bea
 // the BPM of the deck CH SELECT points at. For MASTER, MIC and SAMPLER, and
 // before the unit has reported CH SELECT, the BPM is the sync leader's, else
 // the first playing deck's.
+// The BPM of the deck the FX screen follows, or 0.
+PioneerDDJ1000.fxDeckBpm = function() {
+    const deck = PioneerDDJ1000.fxBpmDeck();
+    return deck ? engine.getValue(PioneerDDJ1000.group(deck), "bpm") : 0;
+};
+
 PioneerDDJ1000.fxBpmDeck = function() {
     const target = PioneerDDJ1000.beatFx.target;
     if (typeof target === "number") {
@@ -2276,14 +2335,20 @@ PioneerDDJ1000.updateFxScreen = function() {
     }
     const screen = fx.screen;
     const name = fx.position === null ? null : PioneerDDJ1000.beatFxPositions[fx.position];
-    const deck = PioneerDDJ1000.fxBpmDeck();
-    const bpm = deck ? engine.getValue(PioneerDDJ1000.group(deck), "bpm") : 0;
+    const deckBpm = PioneerDDJ1000.fxDeckBpm();
+    if (fx.tapBpm !== null && !PioneerDDJ1000.rollType() &&
+        Math.abs(deckBpm - (fx.tapDeckBpm || 0)) > 0.01) {
+        // The deck's tempo changed: rescale the effect to the tapped BPM.
+        PioneerDDJ1000.applyBeatFxParam();
+    }
+    const bpm = fx.tapBpm !== null ? fx.tapBpm : deckBpm;
     // rekordbox sends 120.00 for an empty deck.
     const value = Math.round((bpm > 0 ? bpm : 120) * 100);
     const beat = PioneerDDJ1000.beatText();
+    const tap = fx.tapBpm !== null;
     const nameChanged = name !== null && name !== screen.name;
     const beatChanged = beat !== screen.beat;
-    if (!nameChanged && !beatChanged && value === screen.bpm) {
+    if (!nameChanged && !beatChanged && value === screen.bpm && tap === screen.tap) {
         return;
     }
     if ((nameChanged || beatChanged) && name !== null) {
@@ -2293,19 +2358,46 @@ PioneerDDJ1000.updateFxScreen = function() {
     }
     screen.beat = beat;
     screen.bpm = value;
+    screen.tap = tap;
     fx.screenQueue.push(DDJ1000Jog.buildFxBeat(beat));
-    fx.screenQueue.push(DDJ1000Jog.buildFxBpm(value / 100));
+    fx.screenQueue.push(DDJ1000Jog.buildFxBpm(value / 100, tap));
     PioneerDDJ1000.jogSend(fx.screenQueue.shift());
 };
 
-// SHIFT + BEAT < / > (AUTO / TAP in rekordbox): Mixxx effects follow the deck
-// tempo on their own, so these only light up.
+// SHIFT + BEAT < / > (AUTO / TAP in rekordbox). TAP sets the FX BPM from the
+// taps; AUTO goes back to the deck's BPM. Mixxx effects always follow the
+// deck's tempo, so with a tapped BPM the beat-based effects are scaled by
+// deck BPM / tapped BPM (see applyBeatFxParam).
 PioneerDDJ1000.beatAuto = function(_channel, _control, value) {
     PioneerDDJ1000.beatFxLed(PioneerDDJ1000.beatFxNote.auto, value > 0);
+    const fx = PioneerDDJ1000.beatFx;
+    if (value && fx.tapBpm !== null) {
+        fx.tapBpm = null;
+        fx.taps = [];
+        PioneerDDJ1000.applyBeatFxParam();
+    }
 };
 
 PioneerDDJ1000.beatTap = function(_channel, _control, value) {
     PioneerDDJ1000.beatFxLed(PioneerDDJ1000.beatFxNote.tap, value > 0);
+    if (!value) {
+        return;
+    }
+    const fx = PioneerDDJ1000.beatFx;
+    const now = Date.now();
+    const last = fx.taps[fx.taps.length - 1];
+    if (last === undefined || now - last > PioneerDDJ1000.config.tapResetMs) {
+        fx.taps = [];
+    }
+    fx.taps.push(now);
+    fx.taps = fx.taps.slice(-(PioneerDDJ1000.config.tapAverage + 1));
+    if (fx.taps.length < 2) {
+        return;
+    }
+    const interval = (fx.taps[fx.taps.length - 1] - fx.taps[0]) / (fx.taps.length - 1);
+    // The FX screen shows up to 999.99.
+    fx.tapBpm = PioneerDDJ1000.clamp(60000 / interval, 20, 999);
+    PioneerDDJ1000.applyBeatFxParam();
 };
 
 // ---------------------------------------------------------------------------

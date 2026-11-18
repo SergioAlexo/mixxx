@@ -141,10 +141,13 @@ var DDJ1000Jog = (function() {
         return HDR.concat([0x00, 0x0b]).concat(pack7(asciiPadded(text, 5))).concat([0xf7]);
     }
 
-    function buildFxBpm(bpm) {
+    // tap: byte 17 non-zero clears the firmware flag that byte 17 = 00 sets
+    // (fff87eb2[1]), which picks the label next to the BPM; rekordbox's 00 is
+    // AUTO. Sent as 01 while the BPM is tapped (TAP).
+    function buildFxBpm(bpm, tap) {
         var v = Math.max(0, Math.min(0xffff, Math.round(bpm * 100)));
         return HDR.concat([0x00, 0x0c, 0x00, 0x00, (v >> 12) & 0xf, (v >> 8) & 0xf,
-            (v >> 4) & 0xf, v & 0xf, 0x00, 0x00, 0xf7]);
+            (v >> 4) & 0xf, v & 0xf, tap ? 0x01 : 0x00, 0x00, 0xf7]);
     }
 
     // Post-handshake display-config SysEx (types 0x0a/0x0b/0x0c), captured from
